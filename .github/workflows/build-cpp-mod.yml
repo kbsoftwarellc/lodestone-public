@@ -1,0 +1,220 @@
+name: build-cpp-mod
+
+# Every input to this build is pinned to an immutable SHA, and the one binary we
+# download is hash-asserted. A mod DLL runs inside the user's game with their full
+# privileges, so "which bytes went in" has to be answerable months from now, not
+# just today. Anything that can move under us without the commit changing is a hole.
+#
+# The artifact is the complete installable folder (Info.json + thumbnail + DLL), so
+# a release is a CI artifact renamed -- never a zip assembled by hand off-machine.
+
+on:
+  push:
+    paths:
+      - "cpp-mod/**"
+      - "mod/**"
+      - "data/**"
+      - "tools/**"
+      - ".github/workflows/build-cpp-mod.yml"
+  workflow_dispatch:
+
+# Cost control. The Windows `build` job bills at 2x the minute rate, so we do NOT
+# want to compile the same bytes twice.
+#  - No `pull_request:` trigger. `push` already builds every commit on the branch,
+#    and a PR contains those same commits -- GitHub attaches the push run's green
+#    checks to the PR by SHA, so a pull_request run only rebuilt identical bytes.
+#    (It was firing push+PR = two full Windows builds per commit, for nothing.)
+#  - cancel-in-progress: a newer push to the same ref cancels an older still-running
+#    build, so rapid edit->push->edit->push loops don't stack Windows compiles.
+concurrency:
+  group: build-cpp-mod-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MOD_NAME: Lodestone
+
+  # UE4SS headers: Okaetsu's tree at the exact commit of the shipped UE4SS.
+  # Matches "Git SHA #c2ac246" logged by the DLL this mod is built against.
+  UE4SS_REPO: Okaetsu/RE-UE4SS
+  UE4SS_SHA: c2ac246447a8bcd92541070cb474044e7a2bbbe6
+
+  # Import library is generated from the exact shipped DLL (perfect ABI).
+  # Pinned by content hash: the URL is a ROLLING release tag whose asset can be
+  # replaced in place without any visible change here.
+  ZDEV_URL: https://github.com/Okaetsu/RE-UE4SS/releases/download/experimental-palworld/UE4SS-Palworld_zDev.zip
+  # Re-pinned 2026-07-19: the experimental-palworld rolling release re-uploaded this
+  # zip (old 1558d19f... -> 5e0c3e29...). zdev is used only at BUILD time to generate
+  # the UE4SS import lib (export symbol names); the mod's ABI comes from UE4SS_SHA
+  # (the source headers, UNCHANGED), so the shipped DLL stays binary-compatible with
+  # the UE4SS players already run. A dropped symbol would fail the link, loudly.
+  ZDEV_SHA256: 5e0c3e29f276eac7ecb3887561083acdd1027fb088b9c2b66417cf3488469035
+
+  # Third-party header deps, pinned to commit SHAs rather than tags. Tags are
+  # mutable refs; a SHA is the artifact.
+  FMT_SHA: 40626af88bd7df9a5fb80be7b25ac85b122d6c21          # 11.2.0
+  IMGUI_SHA: 5d4126876bc10396d4c6511853ff10964414c776        # v1.92.1
+  IMGUICTE_SHA: 6d943aba9f7cef05da80b86dbb0253b63818f95c     # v1.2.0
+  ZYDIS_SHA: a2278f1d254e492f6a6b39f6cb5d1f5d515659dc        # v4.1.1
+
+  # UEPseudo (RE-UE4SS deps/first/Unreal) is a PRIVATE submodule, so CI cannot
+  # fetch it from source. Upstream substitutes a public vendored copy carried
+  # inside HorseMod, cloned at HEAD -- an unpinned, mutable input.
+  #
+  # We pin the SHA but deliberately do NOT vendor the tree into this repo:
+  # HorseMod is unlicensed, UEPseudo is private with no LICENSE or copyright
+  # banner anywhere in its tree, and the MIT LICENSE lives at the RE-UE4SS root
+  # of a flat-vendored copy. Copying headers of ambiguous provenance into this
+  # repository would turn a build-time reference into redistribution -- the exact
+  # thing NOTICE exists to avoid. Pinning fixes the security problem (mutable
+  # input) without taking on the licensing one.
+  UEPSEUDO_REPO: FottenSC/HorseMod
+  UEPSEUDO_SHA: e6313df89272949081e298aab1579aeaf2d5866a
+
+jobs:
+  # The projection core is engine-free C++ and already has a test nobody runs.
+  # It is the only part of this mod testable without Windows or the game, so
+  # it costs ~20s to stop it from silently rotting.
+  test-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run projection tests
+        run: |
+          g++ -std=c++20 -O2 -Wall -Wextra \
+            -I cpp-mod/mods/CairnMap/src \
+            cpp-mod/tests/test_project.cpp -o test_project
+          ./test_project
+
+  # The generator drifted 12-vs-16 layers behind the header it generates, because
+  # nothing ever ran it (its inputs weren't committed). Running it in CI is what
+  # stops that from recurring: the committed header must be exactly what the
+  # committed data + generator produce.
+  verify-codegen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Frozen inputs still match the header
+        run: python3 tools/codegen/freeze_inputs.py --check
+      - name: Regenerating the header reproduces it byte-for-byte
+        run: python3 tools/codegen/verify_parity.py --regen
+      - name: Relic-type header still matches relic_guids + relic_types
+        run: python3 tools/codegen/gen_relic_types.py --check
+
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch UE4SS headers (public submodules only)
+        shell: bash
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --no-recurse-submodules https://github.com/${UE4SS_REPO}.git ue4ss-src
+          cd ue4ss-src
+          git checkout ${UE4SS_SHA}
+          # everything except the private UEPseudo (deps/first/Unreal)
+          mapfile -t mods < <(git config --file .gitmodules --get-regexp path | awk '{print $2}' | grep -v '^deps/first/Unreal$')
+          git submodule update --init --depth 1 "${mods[@]}" || true
+
+      - name: Fetch third-party headers (pinned to SHAs)
+        shell: bash
+        run: |
+          pin () { # repo sha dest
+            git clone --quiet --filter=blob:none --no-checkout "https://github.com/$1.git" "$3"
+            git -C "$3" fetch --quiet --depth 1 origin "$2"
+            git -C "$3" checkout --quiet "$2"
+            echo "  $3 @ $(git -C "$3" rev-parse HEAD)"
+          }
+          pin fmtlib/fmt                  "$FMT_SHA"      third/fmt
+          pin ocornut/imgui               "$IMGUI_SHA"    third/imgui
+          pin UE4SS-RE/ImGuiColorTextEdit "$IMGUICTE_SHA" third/ImGuiColorTextEdit
+          pin "$UEPSEUDO_REPO"            "$UEPSEUDO_SHA" third/HorseMod
+          git clone --quiet https://github.com/zyantific/zydis.git third/zydis
+          git -C third/zydis checkout --quiet "$ZYDIS_SHA"
+          git -C third/zydis submodule update --init --recursive --depth 1 --quiet
+          echo "  third/zydis @ $(git -C third/zydis rev-parse HEAD)"
+
+      - name: Fetch shipped UE4SS.dll (hash-asserted)
+        shell: bash
+        run: |
+          curl -sL -o zdev.zip "$ZDEV_URL"
+          echo "${ZDEV_SHA256}  zdev.zip" | sha256sum -c - || {
+            echo "::error::zdev zip hash mismatch — the rolling release asset changed."
+            echo "Got: $(sha256sum zdev.zip | cut -d' ' -f1)"
+            echo "If this is an intentional UE4SS update, re-pin ZDEV_SHA256 and UE4SS_SHA together."
+            exit 1
+          }
+          unzip -o -q zdev.zip -d zdev
+          find zdev -name UE4SS.dll
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Generate import library from the DLL
+        shell: pwsh
+        run: |
+          $dll = (Get-ChildItem -Recurse zdev -Filter UE4SS.dll | Select-Object -First 1).FullName
+          dumpbin /exports $dll > exports.txt
+          python .github/workflows/make_def.py exports.txt UE4SS.def
+          lib /def:UE4SS.def /machine:x64 /out:UE4SS.lib
+          Get-Item UE4SS.lib
+
+      - name: Compile mod DLL
+        shell: pwsh
+        run: |
+          $inc = @("/Iue4ss-src/UE4SS/include")
+          Get-ChildItem ue4ss-src/deps/first -Directory | ForEach-Object {
+            if (Test-Path "$($_.FullName)/include") { $inc += "/I$($_.FullName)/include" }
+            else { $inc += "/I$($_.FullName)" }
+          }
+          Get-ChildItem ue4ss-src/deps/third -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            if (Test-Path "$($_.FullName)/include") { $inc += "/I$($_.FullName)/include" }
+          }
+          $inc += "/Ithird/fmt/include"
+          $inc += "/Ithird/imgui"
+          $inc += "/Ithird/ImGuiColorTextEdit"
+          $inc += "/Ithird/HorseMod/RE-UE4SS/deps/first/Unreal/include"
+          $inc += "/Ithird/HorseMod/RE-UE4SS/deps/first/Unreal/include/Unreal/Core"
+          $inc += "/Ithird/HorseMod/RE-UE4SS/deps/first/Unreal/include/Unreal"
+          $inc += "/Ithird/HorseMod/RE-UE4SS/deps/first/Unreal/generated_include"
+          $inc += "/Ithird/zydis/include"
+          $inc += "/Ithird/zydis/dependencies/zycore/include"
+          mkdir out
+          cl /nologo /LD /std:c++latest /EHsc /MD /utf-8 /DNDEBUG /DFMT_HEADER_ONLY=1 /DUE_BUILD_SHIPPING=1 /DUBT_COMPILED_PLATFORM=Windows /DPLATFORM_WINDOWS=1 /D_WIN32_WINNT=0x0A00 /DWINVER=0x0A00 /DZYDIS_STATIC_BUILD /DZYCORE_STATIC_BUILD /DUNICODE /D_UNICODE `
+             $inc cpp-mod/mods/CairnMap/src/dllmain.cpp `
+             /Feout/main.dll /link UE4SS.lib
+          Get-Item out/main.dll
+
+      # The complete installable folder, not a bare DLL. Upstream's CI emitted only
+      # main.dll, so its release zip had to be assembled by hand -- which is why that
+      # binary could not be checked against its source. A release here is this
+      # artifact, unmodified.
+      - name: Package mod folder
+        shell: bash
+        run: |
+          mkdir -p "dist/${MOD_NAME}/dlls"
+          cp out/main.dll "dist/${MOD_NAME}/dlls/main.dll"
+          cp mod/Info.json "dist/${MOD_NAME}/Info.json"
+          cp mod/thumbnail.png "dist/${MOD_NAME}/thumbnail.png"
+          find dist -type f -exec ls -l {} \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.MOD_NAME }}-dist
+          path: dist/
+
+  # Proves the shipped binary carries the data the source declares. Runs on every
+  # build so a data/codegen drift can never reach a release unnoticed.
+  verify-data:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Lodestone-dist
+          path: dist
+      - name: Verify DLL against source header
+        run: |
+          python3 tools/audit/compare_dll.py \
+            "dist/${MOD_NAME}/dlls/main.dll" \
+            --header cpp-mod/mods/CairnMap/src/cairn_data.hpp

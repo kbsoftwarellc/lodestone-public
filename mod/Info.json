@@ -1,0 +1,25 @@
+{
+  "ModName": "Lodestone",
+  "PackageName": "Lodestone",
+  "Thumbnail": "thumbnail.png",
+  "Version": "0.1.0",
+  "DebugMode": false,
+  "MinRevision": 82182,
+  "Author": "tehAon",
+  "Dependencies": [
+    "UE4SSExperimentalPW"
+  ],
+  "Tags": [
+    "UE4SS",
+    "Utilities",
+    "User Interface"
+  ],
+  "InstallRule": [
+    {
+      "Type": "Lua",
+      "Targets": [
+        "./dlls"
+      ]
+    }
+  ]
+}
