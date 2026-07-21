@@ -97,6 +97,12 @@ inline double g_minimap_ox = 14.0;
 inline double g_minimap_oy = 14.0;
 inline double g_minimap_px = 220.0;      // square edge in screen px (MinimapSize)
 inline double g_minimap_range_uu = 6000.0;   // half-width shown, world units (MinimapRange m * 100); 60 m
+// Speed-based auto-zoom (PalMiniMap's "autozoom while moving"): widen the minimap
+// as you travel so more of the way ahead is on screen, then ease back in at rest.
+// A MULTIPLIER on the F9/F10 base range -- it never writes g_minimap_range_uu, so
+// the user's chosen zoom is preserved. Off => always the base range.
+inline bool g_minimap_autozoom = true;
+inline double g_minimap_autozoom_max = 2.5;   // range multiplier at full travel speed
 // EXPERIMENTAL terrain (MinimapTerrain): spawns a top-down SceneCapture2D whose
 // render target is the minimap background -- live world geometry, like PalMiniMap.
 // Opt-in: it spawns an actor and renders the scene a second time each frame (GPU
@@ -1639,6 +1645,14 @@ inline bool g_wp_on = false;
         // arrow/dot work (and its Slate invalidation) while the player holds still.
         double m_mm_last_px = 0, m_mm_last_py = 0, m_mm_last_yaw = 0;
         bool m_mm_have_last = false;
+        // Auto-zoom: instantaneous player speed (uu/s, EMA-smoothed) from frame-to-
+        // frame position deltas, and the smoothed range multiplier eased toward the
+        // speed-derived target so zoom in/out glides instead of snapping.
+        double m_mm_speed_px = 0, m_mm_speed_py = 0;   // last speed sample
+        std::chrono::steady_clock::time_point m_mm_speed_t{};
+        bool m_mm_speed_have = false;
+        double m_mm_speed = 0.0;    // smoothed speed, uu/s
+        double m_auto_zoom = 1.0;   // smoothed range multiplier (>= 1)
         // Perf instrument: max build_minimap / tick_minimap cost over a ~5 s window.
         long long m_mm_build_max = 0, m_mm_tick_max = 0;
         std::chrono::steady_clock::time_point m_mm_next_log{};
@@ -1842,6 +1856,7 @@ inline bool g_wp_on = false;
             double range_m = g_minimap_range_uu / 100.0;   // settings are in metres
             num(L"MinimapRange", range_m, 40.0, 1500.0);   // 40 m floor: keep live-capture pals small
             g_minimap_range_uu = range_m * 100.0;
+            num(L"MinimapAutoZoomMax", g_minimap_autozoom_max, 1.0, 6.0);
             num(L"CompassWidth", g_compass_w, 200.0, 3000.0);
             num(L"CompassHeight", g_compass_h, 24.0, 120.0);
             num(L"CompassArc", g_compass_arc, 20.0, 180.0);
@@ -1960,6 +1975,10 @@ inline bool g_wp_on = false;
             {
                 g_minimap_rotate = (it->second == L"1");
             }
+            if (auto it = raw.find(L"MinimapAutoZoom"); it != raw.end())
+            {
+                g_minimap_autozoom = (it->second == L"1");
+            }
             if (auto it = raw.find(L"MinimapAnchor"); it != raw.end() && it->second.size() == 2)
             {
                 // Two-letter code: vertical (T/C/B) then horizontal (L/C/R).
@@ -2045,6 +2064,12 @@ inline bool g_wp_on = false;
             f << L"# (also F9/F10 zoom in-game). Restart to apply a settings.txt change.\n";
             f << L"MinimapSize=" << g_minimap_px << L"\n";
             f << L"MinimapRange=" << (g_minimap_range_uu / 100.0) << L"\n";
+            f << L"# MinimapAutoZoom = widen the minimap while moving (1 = on), easing back\n";
+            f << L"# in when you stop, so more of the way ahead is visible while travelling.\n";
+            f << L"# It SCALES the F9/F10 base range (never overwrites it). MinimapAutoZoomMax\n";
+            f << L"# = how far out at full mount/glider speed (2.5 = 2.5x the base range).\n";
+            f << L"MinimapAutoZoom=" << (g_minimap_autozoom ? 1 : 0) << L"\n";
+            f << L"MinimapAutoZoomMax=" << g_minimap_autozoom_max << L"\n";
             f << L"# EXPERIMENTAL: live terrain under the minimap via a top-down capture\n";
             f << L"# camera (1 = on). Spawns an actor + renders the scene twice per frame.\n";
             f << L"MinimapTerrain=" << (g_minimap_terrain ? 1 : 0) << L"\n";
@@ -7788,6 +7813,11 @@ inline bool g_wp_on = false;
         // Per-tick: keep the capture straight above the player, looking down, and
         // track zoom changes into OrthoWidth. Verified once in init; K2_TeleportTo has
         // no out-param so it is safe to call without re-verifying each frame.
+        // The half-width the minimap actually shows: the user's F9/F10 base range
+        // scaled by the live auto-zoom multiplier. Everything that renders (dot
+        // scale, bounds cull, terrain OrthoWidth) reads this, not the raw base.
+        auto effective_range_uu() const -> double { return g_minimap_range_uu * m_auto_zoom; }
+
         auto tick_terrain(double px, double py, double pz, double cam_yaw) -> void
         {
             if (!m_terrain_actor)
@@ -7798,11 +7828,12 @@ inline bool g_wp_on = false;
             tp.DestLocation = {px, py, pz + g_terrain_height};
             tp.DestRotation = {-90.0, cam_yaw, 0.0};   // pitch down, yaw spins the capture
             Engine::call(m_terrain_actor, L"K2_TeleportTo", tp);
-            if (m_terrain_comp && m_terrain_ortho != 2.0 * g_minimap_range_uu)
+            const double want_ortho = 2.0 * effective_range_uu();
+            if (m_terrain_comp && m_terrain_ortho != want_ortho)
             {
                 if (auto* v = m_terrain_comp->GetValuePtrByPropertyNameInChain<float>(STR("OrthoWidth")))
-                    *v = static_cast<float>(2.0 * g_minimap_range_uu);
-                m_terrain_ortho = 2.0 * g_minimap_range_uu;
+                    *v = static_cast<float>(want_ortho);
+                m_terrain_ortho = want_ortho;
             }
             if (m_terrain_comp)
             {
@@ -8022,12 +8053,48 @@ inline bool g_wp_on = false;
             }
             const bool rotate = g_minimap_rotate && has_yaw;
 
+            // Speed-based auto-zoom. Sample how fast the player is moving from the
+            // world-position delta between frames, ramp a target multiplier from 1x
+            // (at rest / walk) to g_minimap_autozoom_max (mount/glider speed), then
+            // ease m_auto_zoom toward it so both zoom-out and zoom-in glide. Multiply
+            // only -- the F9/F10 base range is never overwritten.
+            double az_target = 1.0;
+            {
+                const auto snow = std::chrono::steady_clock::now();
+                if (m_mm_speed_have)
+                {
+                    const double dt = std::chrono::duration<double>(snow - m_mm_speed_t).count();
+                    // Skip gaps > 0.5 s (minimap toggled, HUD rebuild, fast-travel) so a
+                    // teleport-sized delta can't spike speed and flash the zoom out.
+                    if (dt > 0.0 && dt < 0.5)
+                    {
+                        const double inst = std::hypot(px - m_mm_speed_px, py - m_mm_speed_py) / dt;
+                        m_mm_speed += (inst - m_mm_speed) * 0.25;   // EMA: one stutter frame can't jerk the zoom
+                    }
+                }
+                m_mm_speed_px = px;
+                m_mm_speed_py = py;
+                m_mm_speed_t = snow;
+                m_mm_speed_have = true;
+                if (g_minimap_autozoom)
+                {
+                    // ~150 uu/s (1.5 m/s) reads as "moving"; ~1400 uu/s (mount/glider)
+                    // is full zoom-out. Linear ramp between = the walk<run<fly tiers.
+                    constexpr double kMoveLo = 150.0, kMoveHi = 1400.0;
+                    const double t = std::clamp((m_mm_speed - kMoveLo) / (kMoveHi - kMoveLo), 0.0, 1.0);
+                    az_target = 1.0 + (g_minimap_autozoom_max - 1.0) * t;
+                }
+            }
+            m_auto_zoom += (az_target - m_auto_zoom) * 0.15;   // ~0.4 s settle at 30 fps
+            const bool zoom_animating = std::abs(az_target - m_auto_zoom) > 0.003;
+
             // Idle-skip: standing still needs no minimap update -- otherwise the
             // per-frame arrow SetRenderTransformAngle invalidates Slate every frame,
             // the residual "hit when the minimap is up". Compare against the last pose
             // we actually DREW (not the previous frame) so slow drift still accumulates
-            // to an update; any real walking/turning exceeds the epsilon at once.
-            const bool idle = m_mm_have_last && std::abs(px - m_mm_last_px) < 2.0 &&
+            // to an update; any real walking/turning exceeds the epsilon at once. Also
+            // stay awake while the auto-zoom is still easing so the relayout tracks it.
+            const bool idle = m_mm_have_last && !zoom_animating && std::abs(px - m_mm_last_px) < 2.0 &&
                               std::abs(py - m_mm_last_py) < 2.0 &&
                               (!has_yaw || std::abs(yaw - m_mm_last_yaw) < 0.3);
 
@@ -8098,7 +8165,8 @@ inline bool g_wp_on = false;
                 return;
             }
             const double half = g_minimap_px / 2.0;
-            const double scale = half / g_minimap_range_uu;
+            const double eff_range = effective_range_uu();   // base * auto-zoom
+            const double scale = half / eff_range;
             const bool icons = m_icons_ready.load(std::memory_order_acquire);
             // Rotate mode: turn each offset by (90 + yaw) so player-forward maps to +Y
             // (screen up). The yaw sign matches the compass fix -- the game's yaw is
@@ -8118,8 +8186,8 @@ inline bool g_wp_on = false;
                     dx = rx;
                     dy = ry;
                 }
-                if (dx < -g_minimap_range_uu || dx > g_minimap_range_uu || dy < -g_minimap_range_uu ||
-                    dy > g_minimap_range_uu || cursor >= kMinimapMaxDots)
+                if (dx < -eff_range || dx > eff_range || dy < -eff_range ||
+                    dy > eff_range || cursor >= kMinimapMaxDots)
                 {
                     return;
                 }
