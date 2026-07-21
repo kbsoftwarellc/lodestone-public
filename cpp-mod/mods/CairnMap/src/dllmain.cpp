@@ -119,6 +119,14 @@ inline int g_terrain_source = 7;            // SCS_BaseColor
 // a direct brightness dial in EV stops: 0 = neutral, positive = brighter, negative =
 // darker. Tune one value so both day and night read (night black -> raise it).
 inline double g_terrain_exposure = 1.0;
+// Display-side dimmer for the terrain render target. BaseColor (source 7) is raw
+// unlit albedo -- no capture-side exposure/tonemap applies to it, so at midday it
+// reads blown-out and over-saturated next to a lit map like PalMiniMap. The RT
+// shows through a Slate MATERIAL brush (M_CapturedMaterial), and Slate multiplies a
+// material brush's output by the image's ColorAndOpacity tint, so a grey tint dims
+// the terrain uniformly -- day/night-consistent (BaseColor is time-independent) and
+// capture-safe (cannot black the capture out). Sweepable live via settings.txt.
+inline double g_terrain_brightness = 0.55;
 // Rotate the map with the player (player-forward = up, "you" arrow fixed pointing
 // up) vs north-up (map fixed, arrow rotates to your facing). Default ROTATE: once
 // the rotation sign was fixed (90 + yaw -- the game's yaw is clockwise), Kenny asked
@@ -1844,6 +1852,7 @@ inline bool g_wp_on = false;
             num(L"MinimapTerrainSource", tsrc, 0.0, 9.0);
             g_terrain_source = static_cast<int>(tsrc);
             num(L"MinimapTerrainExposure", g_terrain_exposure, -10.0, 10.0);
+            num(L"MinimapTerrainBrightness", g_terrain_brightness, 0.05, 1.0);
             num(L"CompassX", g_compass_ox, 0.0, 4000.0);
             num(L"CompassY", g_compass_oy, 0.0, 4000.0);
             num(L"MenuButtonSize", g_menu_btn_size, 24.0, 96.0);
@@ -2048,6 +2057,10 @@ inline bool g_wp_on = false;
             f << L"# (source 2), in EV stops: 0 = neutral, positive = brighter, negative =\n";
             f << L"# darker. Tune one value so day + night both read. Ignored by BaseColor (7).\n";
             f << L"MinimapTerrainExposure=" << g_terrain_exposure << L"\n";
+            f << L"# MinimapTerrainBrightness = display dimmer for the terrain (0.05..1.0).\n";
+            f << L"# Lower = darker/less blown-out. Works on BaseColor (7) too, where the\n";
+            f << L"# exposure dial does nothing. Applied as a grey tint on the RT image.\n";
+            f << L"MinimapTerrainBrightness=" << g_terrain_brightness << L"\n";
             f << L"# Rotate the map with you (1, player faces up) vs north-up (0). F6 toggles.\n";
             f << L"MinimapRotate=" << (g_minimap_rotate ? 1 : 0) << L"\n";
             f << L"#\n";
@@ -7377,7 +7390,8 @@ inline bool g_wp_on = false;
                             Engine::call(bg, L"SetBrushResourceObject", tb);
                         }
                         Style::make_image(bg, g_minimap_px);
-                        Engine::ParamsSetColorAndOpacity w{{1.0f, 1.0f, 1.0f, 1.0f}};
+                        const float tb = static_cast<float>(g_terrain_brightness);
+                        Engine::ParamsSetColorAndOpacity w{{tb, tb, tb, 1.0f}};
                         Engine::call(bg, L"SetColorAndOpacity", w);
                     }
                 }
@@ -7689,7 +7703,8 @@ inline bool g_wp_on = false;
                     Engine::call(m_minimap_bg, L"SetBrushResourceObject", tb);
                 }
                 Style::make_image(m_minimap_bg, g_minimap_px);
-                Engine::ParamsSetColorAndOpacity w{{1.0f, 1.0f, 1.0f, 1.0f}};
+                const float tb = static_cast<float>(g_terrain_brightness);
+                Engine::ParamsSetColorAndOpacity w{{tb, tb, tb, 1.0f}};
                 Engine::call(m_minimap_bg, L"SetColorAndOpacity", w);
                 Output::send<LogLevel::Default>(
                     STR("[Lodestone] terrain: RT on bg (material-wrapped={})\n"), wrapped ? 1 : 0);
