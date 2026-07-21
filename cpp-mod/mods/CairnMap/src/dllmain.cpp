@@ -2144,6 +2144,71 @@ inline double g_menu_btn_y = 0.0;
             return n;
         }
 
+        // How many of a layer's items are already obtained/unlocked ("found"), or -1 if the
+        // layer has no completion data (ores, chests, towers, ...). Only the three layers with
+        // a real in-game "collected" state report it: effigies + notes (obtained flags) and
+        // fast travel (per-player unlock). Drives the found/total badge.
+        auto layer_found(int id) const -> int
+        {
+            if (id == kEffigyLayer)
+            {
+                return m_eff_found;
+            }
+            if (id == kNoteLayer)
+            {
+                return m_note_found;
+            }
+            if (id == kFastTravelLayer)
+            {
+                return m_ft_found;
+            }
+            return -1;
+        }
+
+        // The denominator for the badge. Fast travel's layer_count is the REMAINING (locked)
+        // dot count, so use the scanned total instead; every other layer uses layer_count.
+        auto layer_total(int id) const -> int
+        {
+            if (id == kFastTravelLayer && m_ft_total >= 0)
+            {
+                return m_ft_total;
+            }
+            return layer_count(id);
+        }
+
+        // Recompute effigy/note "found" from the obtained set. Called on place AND on
+        // refresh, so the badge tracks collection without a full re-place. have=false =>
+        // flags unknown, leave both as -1 (badge falls back to a plain count). Counts the
+        // full static set (ignoring any relic-type filter) so the badge reflects overall
+        // completion, not the currently-shown subset.
+        auto recompute_found(const std::unordered_set<std::wstring>& collected, bool have) -> void
+        {
+            if (!have)
+            {
+                m_eff_found = -1;
+                m_note_found = -1;
+                return;
+            }
+            int ef = 0;
+            for (size_t i = 0; i < std::size(Data::kEffigies); ++i)
+            {
+                if (collected.contains(Collected::guid_key(Data::kEffigies[i].guid)))
+                {
+                    ++ef;
+                }
+            }
+            int nf = 0;
+            for (size_t i = 0; i < std::size(Data::kNotes); ++i)
+            {
+                if (collected.contains(std::wstring(Data::kNotes[i].row)))
+                {
+                    ++nf;
+                }
+            }
+            m_eff_found = ef;
+            m_note_found = nf;
+        }
+
         // Categories start COLLAPSED (2026-07-19): the config menu can be taller than the
         // screen with several open, and there is no scroll, so the menu opens compact and
         // expands one category at a time (accordion, see poll_categories).
@@ -2407,6 +2472,14 @@ inline double g_menu_btn_y = 0.0;
             std::wstring key;
         };
         std::vector<GuidDot> m_guid_dots;                  // effigy/note dots for refresh
+        // "What's left" completion counts, shown as found/total badges in the panel. -1 =
+        // no data yet (flags not gathered / layer not scanned) -> badge shows a plain count.
+        // Effigies/notes come from the obtained set; fast travel from the per-player unlock
+        // filter in place_live_pois. Other layers have no in-game "collected" concept.
+        int m_eff_found = -1;
+        int m_note_found = -1;
+        int m_ft_found = -1;
+        int m_ft_total = -1;
         double m_applied_zoom = 1.0;
         std::optional<Project::Calibration> m_calibration;
         // The world->canvas transform is a fixed map property, but the runtime pin set is
@@ -2915,6 +2988,11 @@ inline double g_menu_btn_y = 0.0;
             {
                 std::vector<UObject*> objs;
                 UObjectGlobals::FindAllOf(poi.cls, objs);
+                // Total fast-travel points (all, locked+unlocked) = the badge denominator.
+                if (poi.layer_id == kFastTravelLayer && !objs.empty())
+                {
+                    m_ft_total = static_cast<int>(objs.size());
+                }
                 size_t placed = 0;
                 for (auto* o : objs)
                 {
@@ -2972,6 +3050,12 @@ inline double g_menu_btn_y = 0.0;
                 STR("[Lodestone] FT unlock: player-record set={} (have={}), dropped {} by world-flag + {} "
                     "by player-record\n"),
                 ft_unlocked.size(), have_ft ? 1 : 0, ft_by_worldflag, ft_by_player);
+            // Fast-travel "found" = the points we skipped as already unlocked (by world flag
+            // or the player's own record). Only trust it if the FT scan actually returned points.
+            if (m_ft_total > 0)
+            {
+                m_ft_found = static_cast<int>(ft_by_worldflag + ft_by_player);
+            }
             return shown;
         }
 
@@ -5340,6 +5424,7 @@ inline double g_menu_btn_y = 0.0;
             Output::send<LogLevel::Default>(
                 STR("[Lodestone] hidden effigies={}/{} notes={}/{}\n"), eff_hidden,
                 std::size(Data::kEffigies), note_hidden, std::size(Data::kNotes));
+            recompute_found(collected, have_flags);   // seed the found/total badges
             // Everything above is stable for the session (static layers + collectables);
             // everything BELOW is a live actor scan that goes stale as the world changes
             // (eggs get picked up, towers get unlocked). Mark the boundary so a map reopen
@@ -5690,6 +5775,7 @@ inline double g_menu_btn_y = 0.0;
                 m_dots[gd.dot_index].base_hidden = is_collected;
                 dot_keys.insert(gd.key);
             }
+            recompute_found(collected, true);   // keep the found/total badges current
             apply_layer_visibility();
             // Diagnose "collected effigy still shows": an obtained key that matches NO
             // dot means we hold a wrong/stale GUID for that effigy (or note) -- the
@@ -6620,7 +6706,13 @@ inline double g_menu_btn_y = 0.0;
                     }
                 }
                 // name (fills the middle) + count (right), both HitTestInvisible.
-                const std::wstring cs = std::to_wstring(layer_count(it.id));
+                // Layers with a real "collected" state show found/total (e.g. Effigies 12/407,
+                // Fast Travel 22/174); everything else shows a plain total.
+                const int found = layer_found(it.id);
+                const std::wstring cs =
+                    (found >= 0)
+                        ? std::to_wstring(found) + L"/" + std::to_wstring(layer_total(it.id))
+                        : std::to_wstring(layer_count(it.id));
                 const double countW = 8.0 + 7.0 * static_cast<double>(cs.size());
                 const double nameX = s.x + 26.0;
                 const double nameW = s.x + s.w - countW - 6.0 - nameX;
