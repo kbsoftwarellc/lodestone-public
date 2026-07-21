@@ -714,6 +714,23 @@ inline double g_menu_btn_y = 0.0;
             return nullptr;
         }
 
+        // Count descendants whose name starts with `prefix` (StaticConstructObject may
+        // suffix "_1" when a swept name is still held pending GC, so prefix not exact).
+        inline auto count_descendants_prefix(UObject* w, const std::wstring& prefix, int depth = 0) -> int
+        {
+            if (!w || depth > 8)
+            {
+                return 0;
+            }
+            int c = widget_name(w).starts_with(prefix) ? 1 : 0;
+            const int32_t n = children_count(w);
+            for (int32_t i = 0; i < n; ++i)
+            {
+                c += count_descendants_prefix(child_at(w, i), prefix, depth + 1);
+            }
+            return c;
+        }
+
         // Canvas slot offsets: LayoutData.Offsets (FMargin, 4 floats) leads the struct.
         inline auto slot_position(UObject* widget, double& x, double& y) -> bool
         {
@@ -5343,6 +5360,30 @@ inline double g_menu_btn_y = 0.0;
             }
             m_placed = true;
             m_collapsed = false;
+
+            // Leak check for Kenny's "2 where 1 should be" + flickering icons: exactly one
+            // Lodestone_Overlay canvas should be live. >1 = the doubled-overlay leak on a
+            // reused/swapped server map body -- two overlays draw the same dots and their
+            // icons flicker between layers as both paint. M>1 bodies carrying one = which
+            // pooled bodies still hold a stale overlay ensure_layer_canvas didn't sweep.
+            {
+                std::vector<UObject*> bodies;
+                UObjectGlobals::FindAllOf(STR("WBP_Map_Body_C"), bodies);
+                int total = 0, with = 0;
+                for (auto* b : bodies)
+                {
+                    if (!b)
+                    {
+                        continue;
+                    }
+                    const int c = Engine::count_descendants_prefix(b, L"Lodestone_Overlay");
+                    total += c;
+                    with += (c > 0) ? 1 : 0;
+                }
+                Output::send<LogLevel::Default>(
+                    STR("[Lodestone] overlay canvases live: {} across {} of {} map bodies\n"), total, with,
+                    static_cast<int>(bodies.size()));
+            }
         }
 
         // Re-scan ONLY the live layers on a map reopen. Static + collectable dots (below
@@ -7392,28 +7433,21 @@ inline double g_menu_btn_y = 0.0;
                 if (auto* v = m_terrain_comp->GetValuePtrByPropertyNameInChain<float>(STR("MaxViewDistanceOverride")))
                     *v = -1.0f;
                 m_terrain_ortho = 2.0 * g_minimap_range_uu;
-                // Force MANUAL exposure so MinimapTerrainExposure is a deterministic
-                // brightness dial. A scene capture's auto-exposure (eye adaptation) needs
-                // the EyeAdaptation showflag, which is OFF by default on captures -- so the
-                // old "adaptive" path never adapted and night stayed dark regardless of the
-                // bias. Manual needs no adaptation pass: exposure is a direct function of
-                // AutoExposureBias (EV), so the setting always responds (higher = brighter).
+                // Exposure = EV bias only, method LEFT AT the capture default. Forcing
+                // AEM_Manual (method=2) blacked the capture out entirely (Kenny: "minimap
+                // went black") -- manual exposure derives brightness from camera EV100 with
+                // no metering, and this capture's base sits near zero, so a bias of a few
+                // stops can't lift it. The default (auto) method renders the terrain (the
+                // visible blue relief), so keep it and only nudge the bias.
                 // FPostProcessSettings (this build, offsets from CXXHeaderDump):
-                //   bOverride_AutoExposureMethod = bit5 (0x20) @0x0008
-                //   AutoExposureMethod (EAutoExposureMethod)   @0x002A  (2 = AEM_Manual)
-                //   bOverride_AutoExposureBias   = bit5 (0x20) @0x0009
-                //   AutoExposureBias (EV stops)                @0x047C
-                // Direct struct write (same as the props above); the capture re-reads
-                // PostProcessSettings each CaptureScene.
+                //   bOverride_AutoExposureBias = bit5 (0x20) @0x0009
+                //   AutoExposureBias (EV stops)             @0x047C
                 if (auto* pp = m_terrain_comp->GetValuePtrByPropertyNameInChain<uint8_t>(STR("PostProcessSettings")))
                 {
-                    pp[0x0008] |= 0x20;   // bOverride_AutoExposureMethod
-                    pp[0x002A]  = 2;      // AutoExposureMethod = AEM_Manual
                     pp[0x0009] |= 0x20;   // bOverride_AutoExposureBias
                     *reinterpret_cast<float*>(pp + 0x047C) = static_cast<float>(g_terrain_exposure);
-                    // Prove what actually stuck (method must read 2, bias = our value).
                     Output::send<LogLevel::Default>(
-                        STR("[Lodestone] terrain exposure: method={} bias={:.2f} (manual dial)\n"),
+                        STR("[Lodestone] terrain exposure: method={} (default) bias={:.2f}\n"),
                         static_cast<int>(pp[0x002A]), *reinterpret_cast<float*>(pp + 0x047C));
                 }
                 // Read the values back so the log proves what actually stuck vs a silently

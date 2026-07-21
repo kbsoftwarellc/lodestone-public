@@ -5,6 +5,7 @@
 // ⚠ Centered least squares only: raw 1e6-scale world coords cancel
 //   catastrophically in naive normal equations (proven live 2026-07-12).
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <optional>
@@ -226,13 +227,52 @@ namespace CairnMap::Project
                 matched.push_back({w.x, w.y, hit->x, hit->y});
             }
         }
+        // Robust refit: a single least-squares affine gets dragged by mis-paired anchors
+        // (we feed 152 static statues but only ~105 pins exist at runtime, so some match
+        // the wrong nearby pin), and that skew pushes dots off in those regions --
+        // fast-travel/eggs into the water (Kenny). A true match is sub-pixel; a mis-pair is
+        // tens of px. So fit, drop the gross outliers (> max(5px, 5x median)), refit; a
+        // couple passes converges to the clean affine. `matched` is trimmed to the retained
+        // set so the residual diagnostics below report the CLEAN fit.
         Transform final_t = *best;
         if (matched.size() >= 15)
         {
-            if (const auto refined = detail::fit_affine(matched))
+            std::vector<Anchor> keep = matched;
+            for (int pass = 0; pass < 4; ++pass)
             {
+                const auto refined = detail::fit_affine(keep);
+                if (!refined)
+                {
+                    break;
+                }
                 final_t = *refined;
+                std::vector<double> res;
+                res.reserve(keep.size());
+                for (const auto& a : keep)
+                {
+                    const auto p = final_t.apply(a.wx, a.wy);
+                    res.push_back(std::abs(p.x - a.px) + std::abs(p.y - a.py));
+                }
+                std::vector<double> sorted = res;
+                std::sort(sorted.begin(), sorted.end());
+                const double med = sorted[sorted.size() / 2];
+                const double thresh = std::max(5.0, 5.0 * med);
+                std::vector<Anchor> next;
+                next.reserve(keep.size());
+                for (size_t i = 0; i < keep.size(); ++i)
+                {
+                    if (res[i] <= thresh)
+                    {
+                        next.push_back(keep[i]);
+                    }
+                }
+                if (next.size() == keep.size() || next.size() < 15)
+                {
+                    break;   // converged, or too few left to keep trimming
+                }
+                keep = std::move(next);
             }
+            matched = std::move(keep);
         }
         double refine_err = 0;
         double max_res = 0;
