@@ -112,12 +112,13 @@ inline bool g_minimap_terrain = false;
 inline double g_terrain_height = 12000.0;   // 120 m
 inline int g_terrain_source = 7;            // SCS_BaseColor
 // Lit source (FinalColorLDR=2) keeps emissive POI icons coloured (BaseColor=7 shows
-// albedo only -> those icons go black), but the bright top-down view can blow out. A
-// FIXED exposure can't serve both day and night (locked bright = day blows, locked dark
-// = night black). So let auto-exposure ADAPT (night brightens, day darkens, like
-// PalMiniMap) and apply a tunable EV BIAS to lean against blowout. Bias in stops:
-// 0 = neutral, negative = darker, positive = brighter.
-inline double g_terrain_exposure = -1.0;
+// albedo only -> those icons go black), but the bright top-down view can blow out.
+// Auto-exposure ADAPT was tried (let night brighten, day darken) but never fired: a
+// scene capture's eye adaptation needs the EyeAdaptation showflag, OFF by default on
+// captures, so it stayed dark. So the capture is forced to MANUAL exposure and this is
+// a direct brightness dial in EV stops: 0 = neutral, positive = brighter, negative =
+// darker. Tune one value so both day and night read (night black -> raise it).
+inline double g_terrain_exposure = 1.0;
 // Rotate the map with the player (player-forward = up, "you" arrow fixed pointing
 // up) vs north-up (map fixed, arrow rotates to your facing). Default ROTATE: once
 // the rotation sign was fixed (90 + yaw -- the game's yaw is clockwise), Kenny asked
@@ -2001,9 +2002,9 @@ inline double g_menu_btn_y = 0.0;
             f << L"# (2=FinalColorLDR, 0=SceneColorHDR, 7=BaseColor/unlit).\n";
             f << L"MinimapTerrainHeight=" << g_terrain_height << L"\n";
             f << L"MinimapTerrainSource=" << g_terrain_source << L"\n";
-            f << L"# MinimapTerrainExposure = EV bias on the lit capture's auto-exposure\n";
-            f << L"# (source 2). It still adapts to day/night; bias just leans it: negative\n";
-            f << L"# = darker (guards blowout), positive = brighter. Ignored by BaseColor (7).\n";
+            f << L"# MinimapTerrainExposure = manual brightness dial for the lit capture\n";
+            f << L"# (source 2), in EV stops: 0 = neutral, positive = brighter, negative =\n";
+            f << L"# darker. Tune one value so day + night both read. Ignored by BaseColor (7).\n";
             f << L"MinimapTerrainExposure=" << g_terrain_exposure << L"\n";
             f << L"# Rotate the map with you (1, player faces up) vs north-up (0). F6 toggles.\n";
             f << L"MinimapRotate=" << (g_minimap_rotate ? 1 : 0) << L"\n";
@@ -7391,16 +7392,29 @@ inline double g_menu_btn_y = 0.0;
                 if (auto* v = m_terrain_comp->GetValuePtrByPropertyNameInChain<float>(STR("MaxViewDistanceOverride")))
                     *v = -1.0f;
                 m_terrain_ortho = 2.0 * g_minimap_range_uu;
-                // Bias the capture's auto-exposure so a lit source (FinalColorLDR) does not
-                // blow out on the bright top-down view, while STILL adapting to day/night
-                // (a fixed lock made night black). FPostProcessSettings: bOverride_
-                // AutoExposureBias = bit5 (0x20) of the flag byte @0x0009; AutoExposureBias
-                // (EV stops) @0x047C. Direct struct write (same as the props above); the
-                // capture re-reads PostProcessSettings each CaptureScene.
+                // Force MANUAL exposure so MinimapTerrainExposure is a deterministic
+                // brightness dial. A scene capture's auto-exposure (eye adaptation) needs
+                // the EyeAdaptation showflag, which is OFF by default on captures -- so the
+                // old "adaptive" path never adapted and night stayed dark regardless of the
+                // bias. Manual needs no adaptation pass: exposure is a direct function of
+                // AutoExposureBias (EV), so the setting always responds (higher = brighter).
+                // FPostProcessSettings (this build, offsets from CXXHeaderDump):
+                //   bOverride_AutoExposureMethod = bit5 (0x20) @0x0008
+                //   AutoExposureMethod (EAutoExposureMethod)   @0x002A  (2 = AEM_Manual)
+                //   bOverride_AutoExposureBias   = bit5 (0x20) @0x0009
+                //   AutoExposureBias (EV stops)                @0x047C
+                // Direct struct write (same as the props above); the capture re-reads
+                // PostProcessSettings each CaptureScene.
                 if (auto* pp = m_terrain_comp->GetValuePtrByPropertyNameInChain<uint8_t>(STR("PostProcessSettings")))
                 {
+                    pp[0x0008] |= 0x20;   // bOverride_AutoExposureMethod
+                    pp[0x002A]  = 2;      // AutoExposureMethod = AEM_Manual
                     pp[0x0009] |= 0x20;   // bOverride_AutoExposureBias
                     *reinterpret_cast<float*>(pp + 0x047C) = static_cast<float>(g_terrain_exposure);
+                    // Prove what actually stuck (method must read 2, bias = our value).
+                    Output::send<LogLevel::Default>(
+                        STR("[Lodestone] terrain exposure: method={} bias={:.2f} (manual dial)\n"),
+                        static_cast<int>(pp[0x002A]), *reinterpret_cast<float*>(pp + 0x047C));
                 }
                 // Read the values back so the log proves what actually stuck vs a silently
                 // ignored write, and dump a VANILLA capture (menu/Pal preview) to diff.
