@@ -185,6 +185,14 @@ inline double g_menu_btn_size = 40.0;
 inline double g_menu_btn_x = 0.0;
 inline double g_menu_btn_y = 0.0;
 
+// User waypoint (F3): one sticky "go here" target. The compass locks onto this fixed
+// world point until cleared, counting the distance down as you walk -- unlike the passive
+// compass it stays on the CHOSEN point past closer nodes. Persisted so a marked destination
+// survives a relaunch.
+inline double g_wp_x = 0.0;
+inline double g_wp_y = 0.0;
+inline bool g_wp_on = false;
+
     // On-screen marker sizes, before DotScale. Sized for icons, not for the plain
     // coloured dots these started as -- an item icon has to be recognised, not
     // merely seen, and vanilla's own map markers are ~40px for comparison.
@@ -1422,11 +1430,15 @@ inline double g_menu_btn_y = 0.0;
         // Lucky (rare "shiny") wild Pals (Build B): live scan of PalCharacter actors filtered
         // by IsRarePal, nearest-only. No static positions -- they wander + spawn/despawn.
         static constexpr int kLuckyLayer = 1008;
+        // User waypoint (F3): a single sticky "go here" target injected onto the compass. No
+        // static data and no map dot in v1 -- it lives only on the compass strip.
+        static constexpr int kWaypointLayer = 1009;
 
         static constexpr ExtraLayer kExtraLayers[] = {
             {kEffigyLayer, L"Effigies"},      {kNoteLayer, L"Notes"},   {kEggLayer, L"Eggs"},
             {kFastTravelLayer, L"FastTravel"}, {kTowerLayer, L"Tower"}, {kSealedLayer, L"SealedRealm"},
-            {kPalSpeciesLayer, L"Pal"}, {kDungeonLayer, L"Dungeon"}, {kLuckyLayer, L"Lucky"}};
+            {kPalSpeciesLayer, L"Pal"}, {kDungeonLayer, L"Dungeon"}, {kLuckyLayer, L"Lucky"},
+            {kWaypointLayer, L"Waypoint"}};
         // Dynamic panel label for the Pal layer ("Pal: <name>"); a member so its
         // c_str() outlives the panel build. Rebuilt in panel_items from g_track_pal.
         std::wstring m_pal_label = L"Pal";
@@ -1510,6 +1522,8 @@ inline double g_menu_btn_y = 0.0;
         // nearest", Kenny). kLuckyRangeUU = when the sound/alert fires (300 m); + hysteresis so
         // it fires once per approach, not every tick at the boundary.
         static constexpr Engine::FLinearColor_ kLuckyColor{1.0f, 0.84f, 0.20f, 1.0f};
+        // Bright magenta -- no other layer uses it, so the sticky waypoint reads instantly.
+        static constexpr Engine::FLinearColor_ kWaypointColor{1.0f, 0.15f, 0.90f, 1.0f};
         static constexpr double kLuckyRangeUU = 30000.0;
         static constexpr double kLuckyHystUU = 3000.0;
         struct Dot
@@ -1657,6 +1671,7 @@ inline double g_menu_btn_y = 0.0;
         std::atomic<bool> m_compass_toggle_req{false};   // F7
         std::atomic<bool> m_census_req{false};           // F4 -- spawner-table census (dev)
         std::atomic<bool> m_menu_toggle_req{false};      // F5 -- toggle the config popup (map-only)
+        std::atomic<bool> m_waypoint_req{false};         // F3 -- set/clear the sticky waypoint
 
         // P2: the nearest node of each layer to the player, recomputed per map open.
         // Keyed by layer id (kLayers index, or the 1000+ ids of the extra layers).
@@ -1834,6 +1849,12 @@ inline double g_menu_btn_y = 0.0;
             num(L"MenuButtonSize", g_menu_btn_size, 24.0, 96.0);
             num(L"MenuButtonX", g_menu_btn_x, 0.0, 2000.0);
             num(L"MenuButtonY", g_menu_btn_y, 0.0, 2000.0);
+            num(L"WaypointX", g_wp_x, -1.0e7, 1.0e7);
+            num(L"WaypointY", g_wp_y, -1.0e7, 1.0e7);
+            if (auto it = saved.find(L"WaypointOn"); it != saved.end())
+            {
+                g_wp_on = it->second;
+            }
             if (auto it = raw.find(L"TrackPal"); it != raw.end())
             {
                 std::wstring v = it->second;   // trim trailing CR/space (CRLF files)
@@ -2072,6 +2093,12 @@ inline double g_menu_btn_y = 0.0;
             f << L"# to apply (an in-game picker is coming).\n";
             f << L"TrackPal=" << g_track_pal << L"\n";
             f << L"TrackRelic=" << g_track_relic << L"\n";
+            f << L"#\n";
+            f << L"# Waypoint (F3): a sticky 'go here' target on the compass. On=1 when set;\n";
+            f << L"# X/Y are its world coordinates. F3 sets it to the nearest marker, or clears it.\n";
+            f << L"WaypointOn=" << (g_wp_on ? 1 : 0) << L"\n";
+            f << L"WaypointX=" << g_wp_x << L"\n";
+            f << L"WaypointY=" << g_wp_y << L"\n";
             f << L"#\n";
             f << L"# Layer toggles.\n";
             for (int i = 0; i < static_cast<int>(std::size(Data::kLayers)); ++i)
@@ -2540,6 +2567,10 @@ inline double g_menu_btn_y = 0.0;
                 // only touch the atomic; the game thread acts on it (see tick_map).
                 register_keydown_event(Input::Key::F5, no_mods,
                                        [this]() { m_menu_toggle_req.store(true); });
+                // F3: set the sticky waypoint to the nearest thing on the compass, or clear
+                // it if one is already set. Input thread -- only touch the atomic.
+                register_keydown_event(Input::Key::F3, no_mods,
+                                       [this]() { m_waypoint_req.store(true); });
             }
 
             // Icons must be loaded on the GAME thread, and none of the mod hooks
@@ -7784,6 +7815,47 @@ inline double g_menu_btn_y = 0.0;
 
         // Apply the minimap hotkey requests (set on the input thread) on the game
         // thread. Called from whichever loop drives the minimap.
+        // F3 handler (game thread). No waypoint set -> lock onto the nearest thing currently
+        // on the compass (min distance across the enabled layers). Already set -> clear it.
+        // The chosen point is a fixed world coordinate; the compass tick recomputes its
+        // distance each 1 Hz so it counts down as you walk. m_nearest is populated by the
+        // compass tick, so this needs the map opened once (or a live layer scanned).
+        auto toggle_waypoint() -> void
+        {
+            if (g_wp_on)
+            {
+                g_wp_on = false;
+                Output::send<LogLevel::Default>(STR("[Lodestone] waypoint cleared\n"));
+                save_settings();
+                return;
+            }
+            const Nearest* best = nullptr;
+            for (const auto& [id, n] : m_nearest)
+            {
+                if (id == kWaypointLayer || !is_layer_on(id))
+                {
+                    continue;
+                }
+                if (!best || n.dist_uu < best->dist_uu)
+                {
+                    best = &n;
+                }
+            }
+            if (!best)
+            {
+                Output::send<LogLevel::Default>(
+                    STR("[Lodestone] waypoint: nothing near to mark -- open the map once and "
+                        "enable a layer\n"));
+                return;
+            }
+            g_wp_x = best->wx;
+            g_wp_y = best->wy;
+            g_wp_on = true;
+            Output::send<LogLevel::Default>(STR("[Lodestone] waypoint set @ ({:.0f},{:.0f}) dist {:.0f}m\n"),
+                                            g_wp_x, g_wp_y, best->dist_uu / 100.0);
+            save_settings();
+        }
+
         auto handle_minimap_input() -> void
         {
             if (m_minimap_toggle_req.exchange(false))   // F8
@@ -7813,6 +7885,10 @@ inline double g_menu_btn_y = 0.0;
             if (m_census_req.exchange(false))   // F4 (dev): dump the spawner tables
             {
                 census_spawners();
+            }
+            if (m_waypoint_req.exchange(false))   // F3: mark nearest as waypoint, or clear it
+            {
+                toggle_waypoint();
             }
         }
 
@@ -8340,6 +8416,21 @@ inline double g_menu_btn_y = 0.0;
                     {
                         m_nearest.erase(lm.layer);
                     }
+                }
+                // Sticky user waypoint (F3): one fixed world point the compass locks onto
+                // until cleared. Distance is recomputed here each 1 Hz from the live player
+                // position, so it counts DOWN as you walk and stays on the chosen point past
+                // closer nodes. Pure world-space -- no map-open pool involved.
+                if (g_wp_on && is_layer_on(kWaypointLayer))
+                {
+                    const double dx = g_wp_x - px, dy = g_wp_y - py;
+                    const double d = std::sqrt(dx * dx + dy * dy);
+                    m_nearest[kWaypointLayer] =
+                        Nearest{d, 0.0, g_wp_x, g_wp_y, nullptr, kWaypointColor};
+                }
+                else
+                {
+                    m_nearest.erase(kWaypointLayer);
                 }
             }
             // NO idle-skip (2026-07-20). It used to early-return here when the player had not
