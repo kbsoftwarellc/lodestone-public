@@ -2194,7 +2194,9 @@ inline double g_menu_btn_y = 0.0;
         auto layer_row(int idx) -> PanelItem
         {
             const auto& l = Data::kLayers[idx];
-            return {PanelItem::Row, l.key, idx, l.icon, Style::srgb8(l.r), Style::srgb8(l.g), Style::srgb8(l.b)};
+            // Show the real in-game item name (l.display), not the internal key -- the key
+            // stays the settings.txt id + log label everywhere else.
+            return {PanelItem::Row, l.display, idx, l.icon, Style::srgb8(l.r), Style::srgb8(l.g), Style::srgb8(l.b)};
         }
 
         // The panel model. Two modes (2026-07-19 redesign):
@@ -2262,8 +2264,8 @@ inline double g_menu_btn_y = 0.0;
             else if (m_active_tab == 1)   // EFFIGIES tab: on/off summary + a type radio
             {
                 m_relic_label = (m_stage_relic < 0)
-                                    ? std::wstring(L"Effigies: All")
-                                    : (L"Effigies: " + std::wstring(Data::kRelicTypeName[m_stage_relic]));
+                                    ? std::wstring(L"Lifmunk Effigy: All")
+                                    : (L"Lifmunk Effigy: " + std::wstring(Data::kRelicTypeName[m_stage_relic]));
                 {
                     PanelItem relic_sum{PanelItem::Row, m_relic_label.c_str(), kEffigyLayer, Data::kEffigyIcon,
                                         0.35f, 1.0f, 0.20f};
@@ -4042,8 +4044,8 @@ inline double g_menu_btn_y = 0.0;
             if (m_relic_name_lbl)
             {
                 m_relic_label = (m_stage_relic < 0)
-                                    ? std::wstring(L"Effigies: All")
-                                    : (L"Effigies: " + std::wstring(Data::kRelicTypeName[m_stage_relic]));
+                                    ? std::wstring(L"Lifmunk Effigy: All")
+                                    : (L"Lifmunk Effigy: " + std::wstring(Data::kRelicTypeName[m_stage_relic]));
                 Engine::ParamsSetText st{FText(m_relic_label.c_str())};
                 Engine::call(m_relic_name_lbl, L"SetText", st);
             }

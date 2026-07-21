@@ -34,7 +34,7 @@ ARRAY_RE = re.compile(
     re.S,
 )
 LAYER_ROW_RE = re.compile(
-    r'\{\s*L"(?P<key>[^"]+)"\s*,\s*(?P<r>\d+)\s*,\s*(?P<g>\d+)\s*,\s*(?P<b>\d+)\s*,\s*(?P<a>\d+)\s*,'
+    r'\{\s*L"(?P<key>[^"]+)"\s*,\s*L"(?P<display>[^"]*)"\s*,\s*(?P<r>\d+)\s*,\s*(?P<g>\d+)\s*,\s*(?P<b>\d+)\s*,\s*(?P<a>\d+)\s*,'
     r'\s*(?P<arr>k\w+)\s*,\s*(?P<count>\d+)\s*,\s*(?P<on>true|false)\s*,\s*(?P<icon>nullptr|L"[^"]*")\s*\}'
 )
 SYMBOL_RE = re.compile(r'inline\s+constexpr\s+const\s+wchar_t\*\s+(k\w+)\s*=\s*(L"[^"]*")\s*;')
@@ -53,7 +53,7 @@ def parse(path):
     layers = []
     if layers_block:
         for m in LAYER_ROW_RE.finditer(layers_block[1]):
-            layers.append((m["key"], (m["r"], m["g"], m["b"], m["a"]), m["arr"],
+            layers.append((m["key"], m["display"], (m["r"], m["g"], m["b"], m["a"]), m["arr"],
                            int(m["count"]), m["on"], m["icon"]))
 
     return {

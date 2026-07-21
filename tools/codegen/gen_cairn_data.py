@@ -88,6 +88,22 @@ LAYERS = [
     ("Mushroom",   "MushroomLocations.json",     (0xD0, 0x5A, 0x4A, 0xFF), False, "T_itemicon_Food_Mushroom"),
     ("SkillFruit", "SkillFruitLocations.json",   (0xB0, 0x60, 0xE0, 0xFF), False, "T_itemicon_Consume_SkillCard_Neutral"),
 ]
+# Panel/legend display name = the resource's real in-game item name (from the pak's
+# DT_ItemNameText_Common), so the legend is not confusing -- e.g. the "Magma" layer is
+# "Ancient Lava" in-game. The LAYERS key is UNCHANGED (still the settings.txt key +
+# internal id); only the SHOWN label changes. A key missing here falls back to the key.
+# Icon-vs-yield mismatches resolve to the node's real yield: Hexolite's icon is a Sapphire
+# but the node gives Hexolite Quartz; Paldium's node drops Paldium Fragments; CaveMushroom
+# gives Cavern Mushroom; Copper's item is bare "Ore", qualified for clarity.
+DISPLAY = {
+    "Coal": "Coal", "Copper": "Copper Ore", "Quartz": "Pure Quartz", "Sulfur": "Sulfur",
+    "Hexolite": "Hexolite Quartz", "Oil": "Crude Oil", "SkyOre": "Soralite",
+    "TreeOre": "Paloxite", "Magma": "Ancient Lava", "NightStone": "Nightstar Sand",
+    "DogCoin": "Dog Coin", "Lotus": "Life Lotus", "Chest": "Treasure Chest", "Junk": "Junk",
+    "Outpost": "Enemy Camp", "FruitTree": "Kinship Peach", "CaveMushroom": "Cavern Mushroom",
+    "Boss": "Field Boss", "Paldium": "Paldium Fragment", "RedBerry": "Red Berries",
+    "Mushroom": "Mushroom", "SkillFruit": "Skill Fruit",
+}
 EFFIGY_ICON = "T_itemicon_Relic"
 NOTE_ICON = "T_itemicon_Consume_TechnologyBook_G1"
 EGG_ICON = "T_itemicon_Material_PalEgg"
@@ -151,7 +167,7 @@ def main():
     out.append("")
     out.append("namespace CairnMap::Data {")
     out.append("struct Point { int32_t x, y; };")
-    out.append("struct Layer { const wchar_t* key; uint8_t r, g, b, a; const Point* points; size_t count; bool default_on; const wchar_t* icon; };")
+    out.append("struct Layer { const wchar_t* key; const wchar_t* display; uint8_t r, g, b, a; const Point* points; size_t count; bool default_on; const wchar_t* icon; };")
     out.append("struct GuidPoint { uint32_t guid[4]; int32_t x, y; };")
     out.append("struct NotePoint { const wchar_t* row; int32_t x, y; };")
     out.append("")
@@ -167,8 +183,9 @@ def main():
         pts = load_lotus_frozen() if fname is None else load_points(fname)
         emit(key, pts)
         icon_lit = f'L"{icon}"' if icon else "nullptr"
+        display = DISPLAY.get(key, key)
         layer_rows.append(
-            f'    {{L"{key}", {r}, {g}, {b}, {a}, k{key}, {len(pts)}, {"true" if on else "false"}, {icon_lit}}},')
+            f'    {{L"{key}", L"{display}", {r}, {g}, {b}, {a}, k{key}, {len(pts)}, {"true" if on else "false"}, {icon_lit}}},')
         print(f"{key:12s} {len(pts):5d} points")
     # effigies & notes (GUID + position, extraits des cellules L15)
     guids = json.load(open(os.path.join(FROZEN, "relic_guids.json")))

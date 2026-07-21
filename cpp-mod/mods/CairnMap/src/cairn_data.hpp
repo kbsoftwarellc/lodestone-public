@@ -5,7 +5,7 @@
 
 namespace CairnMap::Data {
 struct Point { int32_t x, y; };
-struct Layer { const wchar_t* key; uint8_t r, g, b, a; const Point* points; size_t count; bool default_on; const wchar_t* icon; };
+struct Layer { const wchar_t* key; const wchar_t* display; uint8_t r, g, b, a; const Point* points; size_t count; bool default_on; const wchar_t* icon; };
 struct GuidPoint { uint32_t guid[4]; int32_t x, y; };
 struct NotePoint { const wchar_t* row; int32_t x, y; };
 
@@ -40,27 +40,27 @@ inline constexpr const wchar_t* kNoteIcon = L"T_itemicon_Consume_TechnologyBook_
 inline constexpr const wchar_t* kEggIcon = L"T_itemicon_Material_PalEgg";
 
 inline constexpr Layer kLayers[] = {
-    {L"Coal", 32, 32, 32, 255, kCoal, 496, true, L"T_itemicon_Material_Coal"},
-    {L"Copper", 217, 119, 43, 255, kCopper, 1396, false, L"T_itemicon_Material_CopperOre"},
-    {L"Quartz", 232, 232, 248, 255, kQuartz, 523, true, L"T_itemicon_Material_Quartz"},
-    {L"Sulfur", 217, 200, 43, 255, kSulfur, 279, true, L"T_itemicon_Material_Sulfur"},
-    {L"Hexolite", 57, 209, 209, 255, kHexolite, 349, true, L"T_itemicon_Material_Sapphire"},
-    {L"Oil", 20, 10, 10, 255, kOil, 185, true, L"T_itemicon_Material_CrudeOil"},
-    {L"SkyOre", 64, 217, 255, 255, kSkyOre, 208, true, L"T_itemicon_Material_SkyIslandOre"},
-    {L"TreeOre", 77, 255, 102, 255, kTreeOre, 80, true, L"T_itemicon_Material_WorldTreeOre"},
-    {L"Magma", 255, 89, 26, 255, kMagma, 10, true, L"T_itemicon_Material_Lava_Ancient"},
-    {L"NightStone", 166, 102, 255, 255, kNightStone, 271, true, L"T_itemicon_Material_NightStone"},
-    {L"DogCoin", 255, 217, 51, 217, kDogCoin, 128, false, L"T_itemicon_Material_DogCoin"},
-    {L"Lotus", 255, 115, 204, 217, kLotus, 700, false, L"T_itemicon_Food_Lotus_hp_01"},
-    {L"Chest", 255, 200, 58, 255, kChest, 1559, false, L"T_icon_compass_Search_Treasure"},
-    {L"Junk", 154, 140, 110, 255, kJunk, 670, false, L"T_icon_compass_Search_Junk"},
-    {L"Outpost", 255, 60, 60, 255, kOutpost, 59, true, L"T_icon_camp"},
-    {L"FruitTree", 90, 220, 90, 255, kFruitTree, 65, true, L"T_itemicon_Consume_AffectionFruit_01"},
-    {L"CaveMushroom", 200, 138, 90, 255, kCaveMushroom, 46, false, L"T_itemicon_Food_Mushroom"},
-    {L"Boss", 255, 64, 48, 255, kBoss, 122, false, L"T_icon_compass_boss"},
-    {L"Paldium", 90, 140, 240, 255, kPaldium, 2060, false, L"T_itemicon_Material_PalCrystal_Ex"},
-    {L"RedBerry", 226, 58, 58, 255, kRedBerry, 1939, false, L"T_itemicon_Food_Berries"},
-    {L"Mushroom", 208, 90, 74, 255, kMushroom, 353, false, L"T_itemicon_Food_Mushroom"},
-    {L"SkillFruit", 176, 96, 224, 255, kSkillFruit, 47, false, L"T_itemicon_Consume_SkillCard_Neutral"},
+    {L"Coal", L"Coal", 32, 32, 32, 255, kCoal, 496, true, L"T_itemicon_Material_Coal"},
+    {L"Copper", L"Copper Ore", 217, 119, 43, 255, kCopper, 1396, false, L"T_itemicon_Material_CopperOre"},
+    {L"Quartz", L"Pure Quartz", 232, 232, 248, 255, kQuartz, 523, true, L"T_itemicon_Material_Quartz"},
+    {L"Sulfur", L"Sulfur", 217, 200, 43, 255, kSulfur, 279, true, L"T_itemicon_Material_Sulfur"},
+    {L"Hexolite", L"Hexolite Quartz", 57, 209, 209, 255, kHexolite, 349, true, L"T_itemicon_Material_Sapphire"},
+    {L"Oil", L"Crude Oil", 20, 10, 10, 255, kOil, 185, true, L"T_itemicon_Material_CrudeOil"},
+    {L"SkyOre", L"Soralite", 64, 217, 255, 255, kSkyOre, 208, true, L"T_itemicon_Material_SkyIslandOre"},
+    {L"TreeOre", L"Paloxite", 77, 255, 102, 255, kTreeOre, 80, true, L"T_itemicon_Material_WorldTreeOre"},
+    {L"Magma", L"Ancient Lava", 255, 89, 26, 255, kMagma, 10, true, L"T_itemicon_Material_Lava_Ancient"},
+    {L"NightStone", L"Nightstar Sand", 166, 102, 255, 255, kNightStone, 271, true, L"T_itemicon_Material_NightStone"},
+    {L"DogCoin", L"Dog Coin", 255, 217, 51, 217, kDogCoin, 128, false, L"T_itemicon_Material_DogCoin"},
+    {L"Lotus", L"Life Lotus", 255, 115, 204, 217, kLotus, 700, false, L"T_itemicon_Food_Lotus_hp_01"},
+    {L"Chest", L"Treasure Chest", 255, 200, 58, 255, kChest, 1559, false, L"T_icon_compass_Search_Treasure"},
+    {L"Junk", L"Junk", 154, 140, 110, 255, kJunk, 670, false, L"T_icon_compass_Search_Junk"},
+    {L"Outpost", L"Enemy Camp", 255, 60, 60, 255, kOutpost, 59, true, L"T_icon_camp"},
+    {L"FruitTree", L"Kinship Peach", 90, 220, 90, 255, kFruitTree, 65, true, L"T_itemicon_Consume_AffectionFruit_01"},
+    {L"CaveMushroom", L"Cavern Mushroom", 200, 138, 90, 255, kCaveMushroom, 46, false, L"T_itemicon_Food_Mushroom"},
+    {L"Boss", L"Field Boss", 255, 64, 48, 255, kBoss, 122, false, L"T_icon_compass_boss"},
+    {L"Paldium", L"Paldium Fragment", 90, 140, 240, 255, kPaldium, 2060, false, L"T_itemicon_Material_PalCrystal_Ex"},
+    {L"RedBerry", L"Red Berries", 226, 58, 58, 255, kRedBerry, 1939, false, L"T_itemicon_Food_Berries"},
+    {L"Mushroom", L"Mushroom", 208, 90, 74, 255, kMushroom, 353, false, L"T_itemicon_Food_Mushroom"},
+    {L"SkillFruit", L"Skill Fruit", 176, 96, 224, 255, kSkillFruit, 47, false, L"T_itemicon_Consume_SkillCard_Neutral"},
 };
 } // namespace CairnMap::Data
