@@ -1645,6 +1645,10 @@ inline double g_menu_btn_y = 0.0;
             bool cur_glyph = false;
         };
         std::vector<CompassMarker> m_compass_markers;   // pooled, reused each rebuild
+        // layer id -> its OWN marker index. A marker belongs to ONE layer for the HUD's
+        // life, so its icon never flips to another layer's art as arc membership / distance
+        // order churn while you turn (Kenny's "phantom effigies flashing as various icons").
+        std::unordered_map<int, size_t> m_compass_marker_ix;
         std::chrono::steady_clock::time_point m_next_compass_scan{};       // HUD FindAllOf throttle
         std::chrono::steady_clock::time_point m_next_compass_recompute{};  // nearest-per-layer throttle
         std::chrono::steady_clock::time_point m_next_compass_dbg{};        // rate-limit the why-empty log
@@ -2267,18 +2271,23 @@ inline double g_menu_btn_y = 0.0;
                                     ? std::wstring(L"Lifmunk Effigy: All")
                                     : (L"Lifmunk Effigy: " + std::wstring(Data::kRelicTypeName[m_stage_relic]));
                 {
-                    PanelItem relic_sum{PanelItem::Row, m_relic_label.c_str(), kEffigyLayer, Data::kEffigyIcon,
+                    const wchar_t* sum_icon =
+                        (m_stage_relic >= 0 && m_stage_relic < Data::kRelicTypeCount)
+                            ? Data::kRelicTypeIcon[m_stage_relic]
+                            : Data::kEffigyIcon;
+                    PanelItem relic_sum{PanelItem::Row, m_relic_label.c_str(), kEffigyLayer, sum_icon,
                                         0.35f, 1.0f, 0.20f};
                     relic_sum.wide = true;   // full-width toggle above the radio
                     v.push_back(relic_sum);
                 }
                 v.push_back({PanelItem::Header, L"Show which type", 0});
-                v.push_back({PanelItem::Row, L"All types", kRelicAll, nullptr, 0.0f, 0.0f, 0.0f, PanelItem::Pick,
-                             m_stage_relic < 0});
+                v.push_back({PanelItem::Row, L"All types", kRelicAll, Data::kEffigyIcon, 0.0f, 0.0f, 0.0f,
+                             PanelItem::Pick, m_stage_relic < 0});
                 for (int t = 0; t < Data::kRelicTypeCount; ++t)
                 {
-                    v.push_back({PanelItem::Row, Data::kRelicTypeName[t], kRelicPickBase + t, nullptr, 0.0f, 0.0f,
-                                 0.0f, PanelItem::Pick, m_stage_relic == t});
+                    // Each type row shows that relic's own Pal-statue icon.
+                    v.push_back({PanelItem::Row, Data::kRelicTypeName[t], kRelicPickBase + t,
+                                 Data::kRelicTypeIcon[t], 1.0f, 1.0f, 1.0f, PanelItem::Pick, m_stage_relic == t});
                 }
             }
             else   // m_active_tab == 2: PALS tab: on/off summary + A-Z rail + species list
@@ -3154,6 +3163,12 @@ inline double g_menu_btn_y = 0.0;
                 resolve_one(l.icon);
             }
             resolve_one(Data::kEffigyIcon);
+            // Per-type effigy icons: each relic type is a distinct Pal statue (Lifmunk,
+            // Lamball, Pengullet, ...) with its own item icon T_itemicon_Relic[_NN].
+            for (const auto* relic_icon : Data::kRelicTypeIcon)
+            {
+                resolve_one(relic_icon);
+            }
             resolve_one(Data::kNoteIcon);
             resolve_one(Data::kEggIcon);
             resolve_one(kFastTravelIcon);
@@ -5239,6 +5254,7 @@ inline double g_menu_btn_y = 0.0;
                                           const Engine::FLinearColor_& color, const wchar_t* icon,
                                           double base_size, int layer_id,
                                           const std::function<bool(size_t)>& filter_fn = {},
+                                          const std::function<const wchar_t*(size_t)>& icon_fn = {},
                                           const Engine::FLinearColor_* backing = nullptr,
                                           double backing_size = 0.0, double backing_border = 0.0,
                                           const Engine::FLinearColor_* backing_border_col = nullptr) -> size_t {
@@ -5278,7 +5294,10 @@ inline double g_menu_btn_y = 0.0;
                     // coord_fn yields std::pair<int,int>; the casts are required, not
                     // stylistic -- int -> double inside braces is a narrowing
                     // conversion unless the source is a constant expression.
-                    const size_t idx = emit_dot(image_class, pos, world, color, icon, base_size,
+                    // Per-effigy icon (each relic type is a distinct Pal statue with its own
+                    // in-game icon); falls back to the fixed layer icon when no override.
+                    const wchar_t* dot_icon = icon_fn ? icon_fn(i) : icon;
+                    const size_t idx = emit_dot(image_class, pos, world, color, dot_icon, base_size,
                                                 !is_collected, layer_id);
                     if (idx != SIZE_MAX)
                     {
@@ -5298,6 +5317,12 @@ inline double g_menu_btn_y = 0.0;
                 [](size_t i) {
                     return g_track_relic < 0 ||
                            (i < Data::kEffigyTypeCount && Data::kEffigyType[i] == g_track_relic);
+                },
+                [](size_t i) {
+                    // Each effigy shows its own relic-type icon (Lifmunk/Lamball/Pengullet/...).
+                    const int t = (i < Data::kEffigyTypeCount) ? Data::kEffigyType[i] : 0;
+                    return (t >= 0 && t < Data::kRelicTypeCount) ? Data::kRelicTypeIcon[t]
+                                                                 : Data::kEffigyIcon;
                 });
             // Notes: the technology-book icon on an AMBER map pin with a dark ring border
             // (was bright magenta -- "way too pink", per Kenny). The disc makes the book
@@ -5310,8 +5335,8 @@ inline double g_menu_btn_y = 0.0;
                 std::size(Data::kNotes),
                 [](size_t i) { return std::pair<int, int>{Data::kNotes[i].x, Data::kNotes[i].y}; },
                 [](size_t i) { return std::wstring(Data::kNotes[i].row); },
-                {1.0f, 1.0f, 1.0f, 1.0f}, Data::kNoteIcon, 16.0, kNoteLayer, {}, &kNoteBacking, 24.0, 2.5,
-                &kNoteBorder);
+                {1.0f, 1.0f, 1.0f, 1.0f}, Data::kNoteIcon, 16.0, kNoteLayer, {}, {}, &kNoteBacking, 24.0,
+                2.5, &kNoteBorder);
             Output::send<LogLevel::Default>(
                 STR("[Lodestone] hidden effigies={}/{} notes={}/{}\n"), eff_hidden,
                 std::size(Data::kEffigies), note_hidden, std::size(Data::kNotes));
@@ -5367,28 +5392,25 @@ inline double g_menu_btn_y = 0.0;
             m_placed = true;
             m_collapsed = false;
 
-            // Leak check for Kenny's "2 where 1 should be" + flickering icons: exactly one
-            // Lodestone_Overlay canvas should be live. >1 = the doubled-overlay leak on a
-            // reused/swapped server map body -- two overlays draw the same dots and their
-            // icons flicker between layers as both paint. M>1 bodies carrying one = which
-            // pooled bodies still hold a stale overlay ensure_layer_canvas didn't sweep.
+            // Leak check for the doubled-overlay report. Our overlay is a CanvasPanel named
+            // Lodestone_Overlay*, so find those DIRECTLY -- the old walk descended each
+            // WBP_Map_Body_C via GetChildAt, but a map body is a UUserWidget (no panel
+            // children), so it always read 0 and could neither confirm nor deny the leak.
+            // Total stays small if ensure_layer_canvas keeps sweeping reused bodies; an
+            // unbounded climb across opens is the leak (two overlays paint -> "2 where 1").
             {
-                std::vector<UObject*> bodies;
-                UObjectGlobals::FindAllOf(STR("WBP_Map_Body_C"), bodies);
-                int total = 0, with = 0;
-                for (auto* b : bodies)
+                std::vector<UObject*> canvases;
+                UObjectGlobals::FindAllOf(STR("CanvasPanel"), canvases);
+                int overlays = 0;
+                for (auto* c : canvases)
                 {
-                    if (!b)
+                    if (c && Engine::widget_name(c).starts_with(L"Lodestone_Overlay"))
                     {
-                        continue;
+                        ++overlays;
                     }
-                    const int c = Engine::count_descendants_prefix(b, L"Lodestone_Overlay");
-                    total += c;
-                    with += (c > 0) ? 1 : 0;
                 }
                 Output::send<LogLevel::Default>(
-                    STR("[Lodestone] overlay canvases live: {} across {} of {} map bodies\n"), total, with,
-                    static_cast<int>(bodies.size()));
+                    STR("[Lodestone] Lodestone_Overlay canvases live: {}\n"), overlays);
             }
         }
 
@@ -6475,6 +6497,33 @@ inline double g_menu_btn_y = 0.0;
                             flat_card = card;
                         }
                     }
+                    // Optional icon at a Pick row's left (effigy type -> its own Pal-statue
+                    // icon, so the picker matches the map). Reserve the pad whenever the row
+                    // carries an icon so the layout is stable even before textures finish
+                    // loading; draw the art once it is ready.
+                    const double icon_pad = (it.icon && it.style == PanelItem::Pick) ? 20.0 : 0.0;
+                    if (icon_pad > 0.0)
+                    {
+                        FStaticConstructObjectParameters sp{image_class, target};
+                        if (UObject* sw = UObjectGlobals::StaticConstructObject(sp))
+                        {
+                            UObject* tex = m_icons_ready.load(std::memory_order_acquire) ? layer_texture(it.icon)
+                                                                                         : nullptr;
+                            if (tex)
+                            {
+                                Engine::ParamsSetBrushFromTexture b{tex, false};
+                                Engine::call(sw, L"SetBrushFromTexture", b);
+                                Style::make_image(sw, 16.0);
+                                Engine::ParamsSetColorAndOpacity c{
+                                    Style::icon_is_glyph(it.icon) ? Engine::FLinearColor_{it.r, it.g, it.b, 1.0f}
+                                                                  : Engine::FLinearColor_{1.0f, 1.0f, 1.0f, 1.0f}};
+                                Engine::call(sw, L"SetColorAndOpacity", c);
+                                Engine::ParamsSetVisibility iv{Engine::Vis_HitTestInvisible};
+                                Engine::call(sw, L"SetVisibility", iv);
+                                add_to_panel(sw, s.x + 8.0, s.y + (rh - 16.0) / 2.0, 16.0, 16.0);
+                            }
+                        }
+                    }
                     // label: left-aligned for Pick (the real name), centred otherwise
                     float lr = 0.80f, lg = 0.85f, lb = 0.92f;
                     if (button_like && sel)
@@ -6490,8 +6539,8 @@ inline double g_menu_btn_y = 0.0;
                         lb = 1.0f;
                     }
                     const int font = it.style == PanelItem::Chip ? 10 : (button_like ? 12 : 11);
-                    const double lx = (it.style == PanelItem::Pick) ? s.x + 10.0 : s.x + 3.0;
-                    const double lw = s.w - ((it.style == PanelItem::Pick) ? 16.0 : 6.0);
+                    const double lx = (it.style == PanelItem::Pick) ? s.x + 10.0 + icon_pad : s.x + 3.0;
+                    const double lw = s.w - ((it.style == PanelItem::Pick) ? 16.0 + icon_pad : 6.0);
                     if (UObject* lbl = add_label(it.label, lx, s.y + (rh - 16.0) / 2.0, (lw > 8.0 ? lw : 8.0), font,
                                                  lr, lg, lb, 1.0f))
                     {
@@ -8031,6 +8080,7 @@ inline double g_menu_btn_y = 0.0;
                 m_compass_backing = nullptr;
                 m_compass_center = nullptr;
                 m_compass_markers.clear();    // pooled markers died with it too
+                m_compass_marker_ix.clear();  // layer->marker map points into the dead pool
                 m_compass_have_last = false;
             }
             auto* canvas_class =
@@ -8245,6 +8295,7 @@ inline double g_menu_btn_y = 0.0;
                 double dist;
                 const wchar_t* icon;
                 Engine::FLinearColor_ color;
+                int layer;
             };
             std::vector<Place> places;
             int enabled_seen = 0, arc_culled = 0;   // dev: why the strip is empty
@@ -8284,7 +8335,7 @@ inline double g_menu_btn_y = 0.0;
                     ++arc_culled;
                     continue;   // behind you / outside the shown arc
                 }
-                places.push_back({half + rel * kpx, n.dist_uu, n.icon, n.color});
+                places.push_back({half + rel * kpx, n.dist_uu, n.icon, n.color, layer_id});
             }
             if (now >= m_next_compass_dbg)
             {
@@ -8298,10 +8349,16 @@ inline double g_menu_btn_y = 0.0;
             std::sort(places.begin(), places.end(),
                       [](const Place& a, const Place& b) { return a.dist > b.dist; });
 
-            size_t cursor = 0;
+            std::unordered_set<int> shown;
             for (const auto& p : places)
             {
-                if (cursor >= m_compass_markers.size())
+                size_t idx = 0;
+                auto ixit = m_compass_marker_ix.find(p.layer);
+                if (ixit != m_compass_marker_ix.end())
+                {
+                    idx = ixit->second;
+                }
+                else
                 {
                     CompassMarker m{};
                     {
@@ -8309,12 +8366,12 @@ inline double g_menu_btn_y = 0.0;
                         m.icon = UObjectGlobals::StaticConstructObject(params);
                         if (!m.icon)
                         {
-                            break;
+                            continue;
                         }
                         Engine::ParamsAddChildToCanvas a{m.icon, nullptr};
                         if (!Engine::call(m_compass_canvas, L"AddChildToCanvas", a) || !a.ReturnValue)
                         {
-                            break;
+                            continue;
                         }
                         m.icon_slot = a.ReturnValue;
                         Engine::ParamsSetAnchors an{0, 0.5, 0, 0.5};
@@ -8351,9 +8408,11 @@ inline double g_menu_btn_y = 0.0;
                             }
                         }
                     }
+                    idx = m_compass_markers.size();
                     m_compass_markers.push_back(m);
+                    m_compass_marker_ix.emplace(p.layer, idx);
                 }
-                CompassMarker& m = m_compass_markers[cursor];
+                CompassMarker& m = m_compass_markers[idx];
                 // Art: item icon (white tint) / a glyph tinted with the layer colour /
                 // a plain coloured dot until icons load. Only re-brush on a change.
                 const bool glyph = p.icon && Style::icon_is_glyph(p.icon);
@@ -8406,19 +8465,34 @@ inline double g_menu_btn_y = 0.0;
                     Engine::ParamsSetVisibility lv{Engine::Vis_HitTestInvisible};
                     Engine::call(m.label, L"SetVisibility", lv);
                 }
-                ++cursor;
-            }
-            // Hide unused pooled markers.
-            for (size_t i = cursor; i < m_compass_markers.size(); ++i)
-            {
-                Engine::ParamsSetVisibility v{Engine::Vis_Collapsed};
-                if (m_compass_markers[i].icon)
+                // Nearest draws on top: z-order by distance, since markers are no longer
+                // created in distance order (each belongs to a fixed layer now).
+                const int z = 1000 - static_cast<int>(std::min(999.0, p.dist / 100.0));
+                Engine::ParamsSetZOrder zo{z};
+                Engine::call(m.icon_slot, L"SetZOrder", zo);
+                if (m.label_slot)
                 {
-                    Engine::call(m_compass_markers[i].icon, L"SetVisibility", v);
+                    Engine::call(m.label_slot, L"SetZOrder", zo);
                 }
-                if (m_compass_markers[i].label)
+                shown.insert(p.layer);
+            }
+            // Collapse each layer whose marker is NOT shown this frame. A layer only ever
+            // hides its OWN marker -- never reassigned to another layer -- so a marker can't
+            // strand showing a stale effigy ("2 where 1") or flip icons as you turn.
+            for (const auto& [layer, ix] : m_compass_marker_ix)
+            {
+                if (shown.count(layer))
                 {
-                    Engine::call(m_compass_markers[i].label, L"SetVisibility", v);
+                    continue;
+                }
+                Engine::ParamsSetVisibility v{Engine::Vis_Collapsed};
+                if (m_compass_markers[ix].icon)
+                {
+                    Engine::call(m_compass_markers[ix].icon, L"SetVisibility", v);
+                }
+                if (m_compass_markers[ix].label)
+                {
+                    Engine::call(m_compass_markers[ix].label, L"SetVisibility", v);
                 }
             }
         }

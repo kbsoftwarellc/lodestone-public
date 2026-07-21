@@ -10,4 +10,5 @@ inline constexpr uint8_t kEffigyType[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 inline constexpr size_t kEffigyTypeCount = 407;
 inline constexpr int kRelicTypeCount = 13;
 inline constexpr const wchar_t* kRelicTypeName[] = {L"Capture Power", L"Hunger Reduction", L"Swim Speed", L"Food Decay Reduction", L"Jump Power", L"Glider Speed", L"Climb Speed", L"Ailment Resist", L"Stamina Reduction", L"Sphere Homing", L"Exp Bonus", L"Rainbow Passive Rate", L"Move Speed"};
+inline constexpr const wchar_t* kRelicTypeIcon[] = {L"T_itemicon_Relic", L"T_itemicon_Relic_01", L"T_itemicon_Relic_02", L"T_itemicon_Relic_03", L"T_itemicon_Relic_04", L"T_itemicon_Relic_05", L"T_itemicon_Relic_06", L"T_itemicon_Relic_07", L"T_itemicon_Relic_08", L"T_itemicon_Relic_09", L"T_itemicon_Relic_10", L"T_itemicon_Relic_11", L"T_itemicon_Relic_12"};
 } // namespace CairnMap::Data
