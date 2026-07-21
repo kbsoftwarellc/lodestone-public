@@ -124,6 +124,18 @@ namespace CairnMap::Project
         double seed_residual_px;     // total over boss towers
         double refine_residual_px;   // mean over matched statues
         size_t matched_statues;
+        // Diagnostics (why a map dot can land off in the water): a single global
+        // affine can't fit a projection that is non-linear or has grown (DLC), so
+        // outer regions drift. These expose it: a big max_residual_px whose
+        // worst_world sits in one region = edge/regional drift; many anchors_over_50px
+        // = mis-matched pins; statue_pins_n far from statue_world_n = the pin set
+        // changed under our fixed anchors.
+        double max_residual_px{};    // worst single matched statue (L1 px)
+        Vec2 worst_world{};          // world pos of that worst statue
+        int anchors_over_50px{};     // matched statues off by >50px (L1)
+        size_t statue_world_n{};     // our static statue anchors fed in
+        size_t statue_pins_n{};      // vanilla FT pins read at runtime
+        size_t boss_pins_n{};        // vanilla boss pins read at runtime
     };
 
     // world positions of bosses/statues come from cairn_data.hpp; pins are the
@@ -223,13 +235,35 @@ namespace CairnMap::Project
             }
         }
         double refine_err = 0;
+        double max_res = 0;
+        Vec2 worst_world{};
+        int over_50 = 0;
         for (const auto& a : matched)
         {
             const auto p = final_t.apply(a.wx, a.wy);
-            refine_err += std::abs(p.x - a.px) + std::abs(p.y - a.py);
+            const double res = std::abs(p.x - a.px) + std::abs(p.y - a.py);
+            refine_err += res;
+            if (res > max_res)
+            {
+                max_res = res;
+                worst_world = {a.wx, a.wy};
+            }
+            if (res > 50.0)
+            {
+                ++over_50;
+            }
         }
         const double mean_err =
             matched.empty() ? 0.0 : refine_err / (2.0 * static_cast<double>(matched.size()));
-        return Calibration{final_t, best_err, mean_err, matched.size()};
+        return Calibration{final_t,
+                           best_err,
+                           mean_err,
+                           matched.size(),
+                           max_res,
+                           worst_world,
+                           over_50,
+                           statue_world.size(),
+                           statue_pins.size(),
+                           boss_pins.size()};
     }
 } // namespace CairnMap::Project

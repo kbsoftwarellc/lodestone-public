@@ -7921,6 +7921,22 @@ inline double g_menu_btn_y = 0.0;
                           layer.icon, col);
                 }
             }
+            // Collectable + live layers (effigies/notes/eggs/dungeons/fast-travel/tower/
+            // sealed/lucky) are NOT in kLayers -- they live in the map dot pool (id >= 1000).
+            // Draw them from m_dots so the minimap mirrors the big map: collected-aware
+            // (base_hidden) and relic-type filtered (the pool was emitted under g_track_relic).
+            // Populated after the first map open (like the compass); the static kLayers above
+            // already show pre-open. Same per-tick walk cost class as compute_nearest.
+            const size_t pooled = std::min(m_emit_cursor, m_dots.size());
+            for (size_t i = 0; i < pooled; ++i)
+            {
+                const Dot& d = m_dots[i];
+                if (d.layer_id < 1000 || d.base_hidden || !is_layer_on(d.layer_id))
+                {
+                    continue;
+                }
+                place(static_cast<double>(d.wx), static_cast<double>(d.wy), d.icon, d.color);
+            }
             for (size_t i = cursor; i < m_minimap_dots.size(); ++i)
             {
                 Engine::ParamsSetVisibility v{Engine::Vis_Collapsed};
@@ -8517,6 +8533,19 @@ inline double g_menu_btn_y = 0.0;
                     STR("[Lodestone] calibrated: seed {:.1f}px refine {:.2f}px ({} anchors)\n"),
                     m_calibration->seed_residual_px, m_calibration->refine_residual_px,
                     m_calibration->matched_statues);
+                // Placement-accuracy diagnostic: a good fit is refine <1px with max <~5px.
+                // A big max at a worst_world clustered in one region = edge/regional drift
+                // (global affine can't fit the map -> dots in the water there); many
+                // over-50px or statue_pins far from statue_world/matched = the pin set
+                // changed under our fixed anchors (patch/DLC). worst_world is in game uu.
+                Output::send<LogLevel::Default>(
+                    STR("[Lodestone] calibration detail: max {:.1f}px at world({:.0f},{:.0f}); {} of {} "
+                        "matched >50px; statues world={} pins={} matched={}; boss pins={}\n"),
+                    m_calibration->max_residual_px, m_calibration->worst_world.x,
+                    m_calibration->worst_world.y, m_calibration->anchors_over_50px,
+                    m_calibration->matched_statues, m_calibration->statue_world_n,
+                    m_calibration->statue_pins_n, m_calibration->matched_statues,
+                    m_calibration->boss_pins_n);
             }
 
             if (!ensure_layer_canvas(map_body_canvas, mask))
