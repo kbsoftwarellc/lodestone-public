@@ -87,6 +87,15 @@ LAYERS = [
     ("RedBerry",   "RedBerryLocations.json",     (0xE2, 0x3A, 0x3A, 0xFF), False, "T_itemicon_Food_Berries"),
     ("Mushroom",   "MushroomLocations.json",     (0xD0, 0x5A, 0x4A, 0xFF), False, "T_itemicon_Food_Mushroom"),
     ("SkillFruit", "SkillFruitLocations.json",   (0xB0, 0x60, 0xE0, 0xFF), False, "T_itemicon_Consume_SkillCard_Neutral"),
+    # Appended 2026-07-21. The Ore/Ingot source players call "iron" was found to already be
+    # the Copper layer (RockCopper = the item shown in-game as bare "Ore", -> "Ingot"; that
+    # layer is renamed "Ore" in DISPLAY). This adds the OTHER Ore source: the RockStone family
+    # (RockStone + RockStone2..7) -- the grey mineable rocks that drop Ore PLUS Stone, ~8.2k
+    # nodes -- so the metal-mining map is complete. Excludes RockStone18 (composite steel-mine
+    # mesh, no simple Ore drop) and SmallStone (Stone only). RockIron is NOT included: it is 8
+    # nodes and actually drops Quartz, not iron. Dense -> default OFF; a plain grey dot (no
+    # icon) so it reads as rock and stays distinct from the orange "Ore" layer.
+    ("OreRocks",   "OreRocksLocations.json",     (0x9A, 0x9A, 0xA0, 0xFF), False, None),
 ]
 # Panel/legend display name = the resource's real in-game item name (from the pak's
 # DT_ItemNameText_Common), so the legend is not confusing -- e.g. the "Magma" layer is
@@ -94,15 +103,17 @@ LAYERS = [
 # internal id); only the SHOWN label changes. A key missing here falls back to the key.
 # Icon-vs-yield mismatches resolve to the node's real yield: Hexolite's icon is a Sapphire
 # but the node gives Hexolite Quartz; Paldium's node drops Paldium Fragments; CaveMushroom
-# gives Cavern Mushroom; Copper's item is bare "Ore", qualified for clarity.
+# gives Cavern Mushroom. The "Copper" layer's item is bare "Ore" (the Ingot source players
+# call "iron"), so it is shown as "Ore"; the RockStone rocks that also drop it are the
+# separate "Ore Rocks" layer.
 DISPLAY = {
-    "Coal": "Coal", "Copper": "Copper Ore", "Quartz": "Pure Quartz", "Sulfur": "Sulfur",
+    "Coal": "Coal", "Copper": "Ore", "Quartz": "Pure Quartz", "Sulfur": "Sulfur",
     "Hexolite": "Hexolite Quartz", "Oil": "Crude Oil", "SkyOre": "Soralite",
     "TreeOre": "Paloxite", "Magma": "Ancient Lava", "NightStone": "Nightstar Sand",
     "DogCoin": "Dog Coin", "Lotus": "Life Lotus", "Chest": "Treasure Chest", "Junk": "Junk",
     "Outpost": "Enemy Camp", "FruitTree": "Kinship Peach", "CaveMushroom": "Cavern Mushroom",
     "Boss": "Field Boss", "Paldium": "Paldium Fragment", "RedBerry": "Red Berries",
-    "Mushroom": "Mushroom", "SkillFruit": "Skill Fruit",
+    "Mushroom": "Mushroom", "SkillFruit": "Skill Fruit", "OreRocks": "Ore Rocks",
 }
 EFFIGY_ICON = "T_itemicon_Relic"
 NOTE_ICON = "T_itemicon_Consume_TechnologyBook_G1"

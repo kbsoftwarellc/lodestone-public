@@ -1433,17 +1433,12 @@ inline bool g_wp_on = false;
         // User waypoint (F3): a single sticky "go here" target injected onto the compass. No
         // static data and no map dot in v1 -- it lives only on the compass strip.
         static constexpr int kWaypointLayer = 1009;
-        // Alpha / field boss Pals (world bosses). Read at map-open from the
-        // DT_BossSpawnerLoactionData table (world location + level) and placed as map dots, so
-        // the compass + nearest readout pick them up like any pooled layer. ~13 world bosses.
-        static constexpr int kBossLayer = 1010;
-        static constexpr const wchar_t* kBossIcon = L"T_icon_compass_boss";
 
         static constexpr ExtraLayer kExtraLayers[] = {
             {kEffigyLayer, L"Effigies"},      {kNoteLayer, L"Notes"},   {kEggLayer, L"Eggs"},
             {kFastTravelLayer, L"FastTravel"}, {kTowerLayer, L"Tower"}, {kSealedLayer, L"SealedRealm"},
             {kPalSpeciesLayer, L"Pal"}, {kDungeonLayer, L"Dungeon"}, {kLuckyLayer, L"Lucky"},
-            {kWaypointLayer, L"Waypoint"}, {kBossLayer, L"Boss"}};
+            {kWaypointLayer, L"Waypoint"}};
         // Dynamic panel label for the Pal layer ("Pal: <name>"); a member so its
         // c_str() outlives the panel build. Rebuilt in panel_items from g_track_pal.
         std::wstring m_pal_label = L"Pal";
@@ -1529,8 +1524,6 @@ inline bool g_wp_on = false;
         static constexpr Engine::FLinearColor_ kLuckyColor{1.0f, 0.84f, 0.20f, 1.0f};
         // Bright magenta -- no other layer uses it, so the sticky waypoint reads instantly.
         static constexpr Engine::FLinearColor_ kWaypointColor{1.0f, 0.15f, 0.90f, 1.0f};
-        // Deep red-orange -- bosses read as danger, distinct from outpost red + tower pink.
-        static constexpr Engine::FLinearColor_ kBossColor{1.0f, 0.30f, 0.08f, 1.0f};
         static constexpr double kLuckyRangeUU = 30000.0;
         static constexpr double kLuckyHystUU = 3000.0;
         struct Dot
@@ -2339,7 +2332,7 @@ inline bool g_wp_on = false;
                 v.push_back({PanelItem::Row, L"Eggs (nearby)", kEggLayer, Data::kEggIcon, 1.0f, 0.82f, 0.15f});
 
                 v.push_back({PanelItem::Header, L"ORES", 0});
-                for (int idx : {0, 1, 2, 3, 4, 6, 7, 8, 9, 18})   // Coal..NightStone + Paldium
+                for (int idx : {0, 1, 2, 3, 4, 6, 7, 8, 9, 18, 22})   // Coal..NightStone + Paldium + OreRocks
                 {
                     v.push_back(layer_row(idx));
                 }
@@ -2362,7 +2355,6 @@ inline bool g_wp_on = false;
                 v.push_back({PanelItem::Row, L"Syndicate Towers", kTowerLayer, kTowerIcon, 1.0f, 0.45f, 0.85f});
                 v.push_back({PanelItem::Row, L"Sealed Realms", kSealedLayer, kSealedIcon, 0.70f, 0.55f, 1.0f});
                 v.push_back({PanelItem::Row, L"Dungeons", kDungeonLayer, kDungeonIcon, 0.35f, 0.85f, 0.75f});
-                v.push_back({PanelItem::Row, L"Field Bosses", kBossLayer, kBossIcon, 1.0f, 0.30f, 0.08f});
                 v.push_back({PanelItem::Row, L"Lucky Pals", kLuckyLayer, nullptr, 1.0f, 0.84f, 0.20f});
             }
             else if (m_active_tab == 1)   // EFFIGIES tab: on/off summary + a type radio
@@ -3298,7 +3290,6 @@ inline bool g_wp_on = false;
             resolve_one(kTowerIcon);
             resolve_one(kSealedIcon);
             resolve_one(kDungeonIcon);
-            resolve_one(kBossIcon);
             resolve_one(L"T_icon_map_player");   // minimap heading arrow
 
             if (resolved == want)
@@ -3882,81 +3873,6 @@ inline bool g_wp_on = false;
             Output::send<LogLevel::Default>(
                 STR("[Lodestone] tracked Pal '{}': nearest {} of {} spawn points from {} spawner(s)\n"),
                 g_track_pal.c_str(), shown, total, spawner_keys.size());
-            return shown;
-        }
-
-        // The world boss UI data table (DT_BossSpawnerLoactionData -- shipped typo). Sibling of
-        // spawner_tables: same CDO + WorldContext, one reflected getter. Returns null until the
-        // tables load (needs a world).
-        auto boss_table() -> UDataTable*
-        {
-            auto* util = UObjectGlobals::StaticFindObject(
-                nullptr, nullptr, STR("/Script/Pal.Default__PalMasterDataTablesUtility"));
-            auto* world_ctx = UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
-            if (!util || !world_ctx)
-            {
-                return nullptr;
-            }
-            struct DTArgs
-            {
-                UObject* WorldContextObject{};
-                UObject* ReturnValue{};
-            } g{world_ctx, nullptr};
-            Engine::call(util, L"GetBossSpawnerUIDataTable", g);
-            return static_cast<UDataTable*>(g.ReturnValue);
-        }
-
-        // Place a dot at every alpha/field-boss location. Walks the boss UI data table's
-        // RowMap; each row is FPalUIBossSpawnerLoactionData -- FVector Location @0x18 (doubles),
-        // int32 Level @0x30, FName CharacterID @0x10 (offsets from CXXHeaderDump/Pal.hpp:8238,
-        // struct base includes the 8-byte FTableRowBase header). Bosses don't move, so a
-        // map-open snapshot is fine (refreshed on reopen); compute_nearest then feeds the
-        // compass + "Field Boss: 340m NE" readout for free. Name+level are LOGGED (there is no
-        // per-dot label surface yet); a hover/tooltip is a follow-up.
-        auto place_bosses(UClass* image_class) -> size_t
-        {
-            if (!m_calibration)
-            {
-                return 0;
-            }
-            UDataTable* boss = boss_table();
-            if (!boss)
-            {
-                return 0;
-            }
-            size_t shown = 0, total = 0;
-            for (auto& kv : boss->GetRowMap())
-            {
-                uint8_t* row = kv.Value;
-                if (!row)
-                {
-                    continue;
-                }
-                ++total;
-                const double wx = *reinterpret_cast<double*>(row + 0x18);   // Location.X
-                const double wy = *reinterpret_cast<double*>(row + 0x20);   // Location.Y
-                const int32_t lvl = *reinterpret_cast<int32_t*>(row + 0x30);   // Level
-                if (wx == 0.0 && wy == 0.0)
-                {
-                    continue;
-                }
-                const auto pos = m_calibration->transform.apply(wx, wy);
-                if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
-                {
-                    continue;
-                }
-                if (emit_dot(image_class, pos, {wx, wy}, kBossColor, kBossIcon, kPoiDotPx, true,
-                             kBossLayer) != SIZE_MAX)
-                {
-                    ++shown;
-                    const auto* cid = reinterpret_cast<const FName*>(row + 0x10);   // CharacterID
-                    std::wstring nm = cid->GetComparisonIndex().IsNone() ? std::wstring(L"?")
-                                                                         : prettify_internal(cid->ToString());
-                    Output::send<LogLevel::Default>(STR("[Lodestone]   boss: {} Lv{} @ ({:.0f},{:.0f})\n"), nm,
-                                                    lvl, wx, wy);
-                }
-            }
-            Output::send<LogLevel::Default>(STR("[Lodestone] bosses: {} of {} placed\n"), shown, total);
             return shown;
         }
 
@@ -5556,7 +5472,6 @@ inline bool g_wp_on = false;
             placed += place_tracked_pal(image_class);   // track-one-Pal spawn points
             placed += place_nearest_dungeons(image_class);   // nearest cave entrances (Build 1.7)
             placed += place_nearest_lucky(image_class);   // nearest lucky/rare wild Pal (Build B)
-            placed += place_bosses(image_class);   // alpha/field boss locations (DT table)
             // collapse any leftover pooled dots beyond this pass
             for (size_t i = m_emit_cursor; i < m_dots.size(); ++i)
             {
@@ -5637,7 +5552,7 @@ inline bool g_wp_on = false;
             // m_live_begin -- re-emitting into a still-present range trips emit_dot's
             // "layer resumed non-contiguously" guard and disables per-layer ranges pool-wide.
             for (int lid : {kEggLayer, kFastTravelLayer, kTowerLayer, kSealedLayer, kPalSpeciesLayer,
-                            kDungeonLayer, kLuckyLayer, kBossLayer})
+                            kDungeonLayer, kLuckyLayer})
             {
                 m_layer_ranges.erase(lid);
             }
@@ -5647,7 +5562,6 @@ inline bool g_wp_on = false;
             placed += place_tracked_pal(image_class);
             placed += place_nearest_dungeons(image_class);
             placed += place_nearest_lucky(image_class);
-            placed += place_bosses(image_class);
             // A shorter tail than last open (an egg picked up, a tower unlocked) leaves stale
             // dots beyond the new cursor -- collapse them. Everything below m_live_begin (<=
             // m_emit_cursor) is static/collectable and is never touched.
