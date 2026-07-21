@@ -718,7 +718,7 @@ inline double g_menu_btn_y = 0.0;
         // suffix "_1" when a swept name is still held pending GC, so prefix not exact).
         inline auto count_descendants_prefix(UObject* w, const std::wstring& prefix, int depth = 0) -> int
         {
-            if (!w || depth > 8)
+            if (!w || depth > 24)   // map body -> WidgetTree -> ... -> our canvas is deep
             {
                 return 0;
             }
@@ -2398,6 +2398,10 @@ inline double g_menu_btn_y = 0.0;
         std::vector<GuidDot> m_guid_dots;                  // effigy/note dots for refresh
         double m_applied_zoom = 1.0;
         std::optional<Project::Calibration> m_calibration;
+        // The world->canvas transform is a fixed map property, but the runtime pin set is
+        // unstable on a server (boss/FT pins drop out some opens). So we KEEP the best
+        // calibration across map-body swaps; this flags a re-evaluation on a new body.
+        bool m_recheck_cal = false;
         bool m_placed = false;
         bool m_collapsed = true;
         int m_log_budget = 20;
@@ -8528,7 +8532,7 @@ inline double g_menu_btn_y = 0.0;
                 // closing -- and the loader has already removed itself, so clearing
                 // the index here would lose the icons permanently.
                 m_icon_scan = 0;
-                m_calibration.reset();
+                m_recheck_cal = true;   // re-evaluate on the new body, but KEEP the best so far
                 m_placed = false;
                 m_collapsed = true;
                 // NOT the panel. It is parented to WBP_Map_Base, which OUTLIVES the
@@ -8539,47 +8543,76 @@ inline double g_menu_btn_y = 0.0;
                 // on its own root's identity.
             }
 
-            if (!m_calibration)
+            if (!m_calibration || m_recheck_cal)
             {
+                m_recheck_cal = false;
                 std::vector<Project::Vec2> boss_pins, statue_pins;
                 read_pins(mask, L"WBP_Map_IconTower_C", boss_pins);
                 read_pins(mask, L"WBP_Map_IconFTTower_C", statue_pins);
                 if (boss_pins.size() < 4 || statue_pins.size() < 100)
                 {
-                    return;   // pins still populating: retry next tick (debounce)
+                    if (!m_calibration)
+                    {
+                        m_recheck_cal = true;   // pins still populating, nothing cached: retry
+                        return;
+                    }
+                    // else: keep the cached calibration and place with it this open
                 }
-                std::vector<Project::Vec2> boss_world, statue_world;
-                for (const auto& p : Data::kBossTowers)
+                else
                 {
-                    boss_world.push_back({static_cast<double>(p.x), static_cast<double>(p.y)});
+                    std::vector<Project::Vec2> boss_world, statue_world;
+                    for (const auto& p : Data::kBossTowers)
+                    {
+                        boss_world.push_back({static_cast<double>(p.x), static_cast<double>(p.y)});
+                    }
+                    for (const auto& p : Data::kStatues)
+                    {
+                        statue_world.push_back({static_cast<double>(p.x), static_cast<double>(p.y)});
+                    }
+                    const auto cand = Project::calibrate(boss_world, boss_pins, statue_world, statue_pins);
+                    // Keep the BEST calibration across body swaps and REJECT a worse open.
+                    // The transform is a fixed map property, but a server drops a boss/FT pin
+                    // some opens -> farthest-pair picks the wrong seed correspondence and the
+                    // whole fit blows up (seed 1106px, 27 outliers). Re-rolling every open was
+                    // breaking a previously-good session; caching the best self-heals instead.
+                    if (cand &&
+                        (!m_calibration || cand->refine_residual_px < m_calibration->refine_residual_px))
+                    {
+                        m_calibration = cand;
+                        Output::send<LogLevel::Default>(
+                            STR("[Lodestone] calibrated: seed {:.1f}px refine {:.2f}px ({} anchors)\n"),
+                            m_calibration->seed_residual_px, m_calibration->refine_residual_px,
+                            m_calibration->matched_statues);
+                        // Good fit: refine <1px, max <~5px. Big max at a clustered worst_world
+                        // = regional drift; many >50px / statue_pins far from world = the pin
+                        // set shifted under our fixed anchors. worst_world is in game uu.
+                        Output::send<LogLevel::Default>(
+                            STR("[Lodestone] calibration detail: max {:.1f}px at world({:.0f},{:.0f}); {} of "
+                                "{} matched >50px; statues world={} pins={} matched={}; boss pins={}\n"),
+                            m_calibration->max_residual_px, m_calibration->worst_world.x,
+                            m_calibration->worst_world.y, m_calibration->anchors_over_50px,
+                            m_calibration->matched_statues, m_calibration->statue_world_n,
+                            m_calibration->statue_pins_n, m_calibration->matched_statues,
+                            m_calibration->boss_pins_n);
+                    }
+                    else if (cand)
+                    {
+                        Output::send<LogLevel::Default>(
+                            STR("[Lodestone] calibration kept cached (refine {:.2f}px) over worse open "
+                                "(seed {:.1f}px refine {:.2f}px, {} anchors >50px)\n"),
+                            m_calibration->refine_residual_px, cand->seed_residual_px,
+                            cand->refine_residual_px, cand->anchors_over_50px);
+                    }
+                    else if (!m_calibration)
+                    {
+                        log_once(L"calibration failed");
+                        return;
+                    }
                 }
-                for (const auto& p : Data::kStatues)
-                {
-                    statue_world.push_back({static_cast<double>(p.x), static_cast<double>(p.y)});
-                }
-                m_calibration = Project::calibrate(boss_world, boss_pins, statue_world, statue_pins);
                 if (!m_calibration)
                 {
-                    log_once(L"calibration failed");
                     return;
                 }
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] calibrated: seed {:.1f}px refine {:.2f}px ({} anchors)\n"),
-                    m_calibration->seed_residual_px, m_calibration->refine_residual_px,
-                    m_calibration->matched_statues);
-                // Placement-accuracy diagnostic: a good fit is refine <1px with max <~5px.
-                // A big max at a worst_world clustered in one region = edge/regional drift
-                // (global affine can't fit the map -> dots in the water there); many
-                // over-50px or statue_pins far from statue_world/matched = the pin set
-                // changed under our fixed anchors (patch/DLC). worst_world is in game uu.
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] calibration detail: max {:.1f}px at world({:.0f},{:.0f}); {} of {} "
-                        "matched >50px; statues world={} pins={} matched={}; boss pins={}\n"),
-                    m_calibration->max_residual_px, m_calibration->worst_world.x,
-                    m_calibration->worst_world.y, m_calibration->anchors_over_50px,
-                    m_calibration->matched_statues, m_calibration->statue_world_n,
-                    m_calibration->statue_pins_n, m_calibration->matched_statues,
-                    m_calibration->boss_pins_n);
             }
 
             if (!ensure_layer_canvas(map_body_canvas, mask))
