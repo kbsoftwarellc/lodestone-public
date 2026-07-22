@@ -7,3 +7,6 @@ build/
 *.pdb
 __pycache__/
 scratch/
+# Claude Code session worktrees -- never track/mirror these (they are embedded
+# git worktrees; a public-sync git add -A would otherwise commit them as gitlinks).
+.claude/
