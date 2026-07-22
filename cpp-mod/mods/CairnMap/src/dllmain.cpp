@@ -8324,31 +8324,44 @@ inline bool g_wp_on = false;
             const double eff_range = effective_range_uu();   // base * auto-zoom
             const double scale = half / eff_range;
             const bool icons = m_icons_ready.load(std::memory_order_acquire);
-            // Rotate mode: turn each offset by (90 + yaw) so player-forward maps to +Y
-            // (screen up). The yaw sign matches the compass fix -- the game's yaw is
-            // clockwise, so (90 - yaw) spun the field the wrong way (Kenny: "rotated the
-            // wrong direction"). The north-up arrow keeps (90 - yaw): that render-angle
-            // path is confirmed correct (SW rock -> SW arrow) and is separate geometry.
-            const double a = rotate ? (90.0 + yaw) * 3.14159265358979323846 / 180.0 : 0.0;
-            const double ca = std::cos(a), saa = std::sin(a);
+            // Rotate mode places each dot at the SAME camera-relative bearing the compass
+            // strip uses (straight ahead = screen up), so the two surfaces always agree.
+            // The old code rotated the world offset by (90 + yaw) -- a pure ROTATION -- but
+            // the compass proved the world<->yaw frame also needs an EAST MIRROR
+            // (CompassFlipEast) on top of the 180 reference (CompassYawOffset): without it a
+            // node that is really BEHIND you reads as ahead -- Kenny: "look at the chest and
+            // walk backwards to reach it", a clean 180. A rotation matrix cannot express a
+            // reflection, so mirror via the bearing instead, reusing the compass's own tuned
+            // constants so one settings edit keeps both surfaces aligned.
+            const double DEG = 3.14159265358979323846 / 180.0;
+            const double cam_b = (90.0 + yaw + g_compass_yaw_offset) * DEG;   // == compass cam_bearing
 
             size_t cursor = 0;
             auto place = [&](double wx, double wy, const wchar_t* icon, const Engine::FLinearColor_& col) {
-                double dx = wx - px, dy = wy - py;
+                const double wdx = wx - px, wdy = wy - py;   // world offset (east, north)
+                double sox, soy;                             // screen offset from centre (right, up+)
                 if (rotate)
                 {
-                    const double rx = dx * ca - dy * saa;
-                    const double ry = dx * saa + dy * ca;
-                    dx = rx;
-                    dy = ry;
+                    // Bearing to the node in the compass's frame (flip_east mirrors left/
+                    // right), minus the camera bearing -> angle clockwise from screen-up.
+                    const double ex = g_compass_flip_east ? (px - wx) : (wx - px);
+                    const double rel = std::atan2(ex, wdy) - cam_b;
+                    const double r = std::hypot(wdx, wdy);
+                    sox = r * std::sin(rel);
+                    soy = r * std::cos(rel);
                 }
-                if (dx < -eff_range || dx > eff_range || dy < -eff_range ||
-                    dy > eff_range || cursor >= kMinimapMaxDots)
+                else
+                {
+                    sox = wdx;   // north-up: world east = screen right, north = up
+                    soy = wdy;
+                }
+                if (sox < -eff_range || sox > eff_range || soy < -eff_range ||
+                    soy > eff_range || cursor >= kMinimapMaxDots)
                 {
                     return;
                 }
-                const float sx = static_cast<float>(half + dx * scale);
-                const float sy = static_cast<float>(half - dy * scale);   // +Y world = up
+                const float sx = static_cast<float>(half + sox * scale);
+                const float sy = static_cast<float>(half - soy * scale);   // screen +y is down
                 if (cursor >= m_minimap_dots.size())
                 {
                     FStaticConstructObjectParameters params{image_class, m_minimap_canvas};
