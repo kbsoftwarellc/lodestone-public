@@ -1594,6 +1594,7 @@ inline bool g_wp_on = false;
         static constexpr double kMinimapDotPx = 14.0;   // big enough for a recognisable icon
         static constexpr size_t kMinimapMaxDots = 260;
         UObject* m_minimap_canvas = nullptr;
+        int32_t m_minimap_canvas_idx = -1;   // object-array slot captured at build, for slot_live()
         std::wstring m_minimap_root_name;
         bool m_minimap_logged = false;
         UObject* m_minimap_frame = nullptr;          // gold border frame behind the bg
@@ -1667,6 +1668,7 @@ inline bool g_wp_on = false;
         // bearing. Reuses the minimap's cached-PC pose + the pre-computed m_nearest, so
         // it never walks the object array per frame.
         UObject* m_compass_canvas = nullptr;
+        int32_t m_compass_canvas_idx = -1;   // object-array slot captured at build, for slot_live()
         std::wstring m_compass_root_name;
         UObject* m_compass_backing = nullptr;   // dark bar behind the markers
         UObject* m_compass_center = nullptr;    // "straight ahead" tick at centre
@@ -7178,6 +7180,63 @@ inline bool g_wp_on = false;
             }
         }
 
+        // Pointer-safe liveness: is the exact object we cached still alive at the
+        // object-array slot it occupied when cached? Uses the captured index, so it
+        // NEVER dereferences the (possibly freed) pointer. The compass/minimap cache
+        // widgets that are children of WBP_PlayerUI, which Palworld rebuilds on map
+        // close / fast-travel / world stream -- killing our canvas. A reflected write
+        // into the dead widget's REUSED memory does not fault, so the SEH backstop
+        // cannot catch it; it silently corrupts the heap and crashes frames later (the
+        // "closed while not even on the map" crash). Gate every cached-HUD write on this.
+        static auto slot_live(UObject* cached, int32_t idx) -> bool
+        {
+            if (!cached || idx < 0)
+            {
+                return false;
+            }
+            FUObjectItem* item = FUObjectArray::IndexToObject(idx);
+            if (!item || !FUObjectArray::IsValid(item, /*bEvenIfPendingKill=*/false))
+            {
+                return false;
+            }
+            return item->GetUObject() == cached;
+        }
+
+        // Drop the compass caches WITHOUT touching the (dead) widgets -- pointer writes
+        // only, safe after the HUD that owned them was destroyed.
+        auto drop_compass_caches() -> void
+        {
+            m_compass_canvas = nullptr;
+            m_compass_canvas_idx = -1;
+            m_compass_backing = nullptr;
+            m_compass_center = nullptr;
+            m_compass_markers.clear();
+            m_compass_marker_ix.clear();
+            m_compass_have_last = false;
+        }
+
+        // Same, for the minimap. A HUD rebuild often means the world changed too, which
+        // GC's the capture actor -- drop those pointers so init_terrain re-spawns rather
+        // than teleporting a dangling actor.
+        auto drop_minimap_caches() -> void
+        {
+            m_minimap_canvas = nullptr;
+            m_minimap_canvas_idx = -1;
+            m_minimap_frame = nullptr;
+            m_minimap_bg = nullptr;
+            m_minimap_you = nullptr;
+            m_you_arrowed = false;
+            m_mm_have_last = false;
+            m_mm_pc = nullptr;
+            m_minimap_dots.clear();
+            m_minimap_dot_slots.clear();
+            m_minimap_dot_icon.clear();
+            m_terrain_tried = false;
+            m_terrain_actor = nullptr;
+            m_terrain_comp = nullptr;
+            m_terrain_rt = nullptr;
+        }
+
         // WBP_PlayerUI's root canvas -- the always-on gameplay HUD container that
         // holds the compass. FindAllOf also returns the blueprint template (the
         // compass-census trap, see compasses_live), so keep only the live
@@ -7260,6 +7319,11 @@ inline bool g_wp_on = false;
 
         auto build_minimap() -> void
         {
+            // Same HUD-rebuild hazard as the compass: drop dead caches before any write.
+            if (m_minimap_canvas && !slot_live(m_minimap_canvas, m_minimap_canvas_idx))
+            {
+                drop_minimap_caches();
+            }
             if (!g_minimap)
             {
                 if (m_minimap_canvas)   // toggled off (F8): hide, keep widgets for re-show
@@ -7295,23 +7359,7 @@ inline bool g_wp_on = false;
                     Engine::call(m_minimap_canvas, L"SetVisibility", v);
                     return;
                 }
-                m_minimap_canvas = nullptr;   // HUD rebuilt; old canvas died with it
-                m_minimap_frame = nullptr;
-                m_minimap_bg = nullptr;
-                m_minimap_you = nullptr;
-                m_you_arrowed = false;
-                m_mm_have_last = false;       // force a full redraw into the rebuilt HUD
-                m_mm_pc = nullptr;            // world may have changed; re-resolve the PC
-                m_minimap_dots.clear();       // pooled dots died with it too
-                m_minimap_dot_slots.clear();
-                m_minimap_dot_icon.clear();
-                // A HUD rebuild often means the world changed, which GC's our capture
-                // actor. Drop the stale pointers and let init_terrain re-spawn rather
-                // than teleport a dangling actor.
-                m_terrain_tried = false;
-                m_terrain_actor = nullptr;
-                m_terrain_comp = nullptr;
-                m_terrain_rt = nullptr;
+                drop_minimap_caches();   // HUD rebuilt; canvas + pooled dots + capture actor all reset
             }
             auto* canvas_class =
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.CanvasPanel"));
@@ -7338,6 +7386,7 @@ inline bool g_wp_on = false;
                 return;
             }
             UObject* slot = add.ReturnValue;
+            m_minimap_canvas_idx = m_minimap_canvas->GetInternalIndex();   // capture live slot for slot_live()
             // 3x3-grid placement (g_minimap_ax/ay), fixed size. Point anchor =>
             // Offsets = {X, Y, Width, Height}; alignment matches the anchor so the
             // margin is measured from that edge and holds at any resolution. A
@@ -8045,6 +8094,11 @@ inline bool g_wp_on = false;
             {
                 return;
             }
+            if (!slot_live(m_minimap_canvas, m_minimap_canvas_idx))
+            {
+                drop_minimap_caches();   // HUD died since build_minimap; next build re-attaches
+                return;
+            }
             double px = 0, py = 0, pz = 0, yaw = 0;
             bool has_yaw = false;
             if (!player_pose(px, py, pz, yaw, has_yaw))   // one PC+pawn walk, not two
@@ -8290,6 +8344,15 @@ inline bool g_wp_on = false;
         // (respawn/reload) rebuilds the strip instead of orphaning it.
         auto build_compass() -> void
         {
+            // HUD rebuilt out from under us (map close / fast-travel / world stream)? Our
+            // canvas + markers were children of the dead WBP_PlayerUI; a reflected write
+            // into their reused memory does not fault, so no SEH can catch it -- it
+            // silently corrupts and crashes later. Detect via the object-array slot (never
+            // derefs the freed pointer) and drop the caches; the rebuild below re-attaches.
+            if (m_compass_canvas && !slot_live(m_compass_canvas, m_compass_canvas_idx))
+            {
+                drop_compass_caches();
+            }
             if (!g_compass)
             {
                 if (m_compass_canvas)   // toggled off (F7): hide, keep widgets for re-show
@@ -8327,12 +8390,7 @@ inline bool g_wp_on = false;
                     Engine::call(m_compass_canvas, L"SetVisibility", v);
                     return;
                 }
-                m_compass_canvas = nullptr;   // HUD rebuilt; old canvas died with it
-                m_compass_backing = nullptr;
-                m_compass_center = nullptr;
-                m_compass_markers.clear();    // pooled markers died with it too
-                m_compass_marker_ix.clear();  // layer->marker map points into the dead pool
-                m_compass_have_last = false;
+                drop_compass_caches();   // HUD rebuilt; old canvas + pooled markers died with it
             }
             auto* canvas_class =
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.CanvasPanel"));
@@ -8359,6 +8417,7 @@ inline bool g_wp_on = false;
                 return;
             }
             UObject* slot = add.ReturnValue;
+            m_compass_canvas_idx = m_compass_canvas->GetInternalIndex();   // capture live slot for slot_live()
             const double ax = g_compass_ax, ay = g_compass_ay;
             const float ox = (ax == 0.0) ? static_cast<float>(g_compass_ox)
                              : (ax == 1.0) ? static_cast<float>(-g_compass_ox) : 0.0f;
@@ -8450,6 +8509,11 @@ inline bool g_wp_on = false;
             if (!m_compass_canvas)
             {
                 dbg_gate(L"no canvas (HUD not found/orphaned -- build_compass could not attach)");
+                return;
+            }
+            if (!slot_live(m_compass_canvas, m_compass_canvas_idx))
+            {
+                drop_compass_caches();   // HUD died since build_compass; next build re-attaches
                 return;
             }
             double px = 0, py = 0, pz = 0, yaw = 0;
