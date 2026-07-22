@@ -125,14 +125,15 @@ inline int g_terrain_source = 7;            // SCS_BaseColor
 // a direct brightness dial in EV stops: 0 = neutral, positive = brighter, negative =
 // darker. Tune one value so both day and night read (night black -> raise it).
 inline double g_terrain_exposure = 1.0;
-// Display-side dimmer for the terrain render target. BaseColor (source 7) is raw
-// unlit albedo -- no capture-side exposure/tonemap applies to it, so at midday it
-// reads blown-out and over-saturated next to a lit map like PalMiniMap. The RT
-// shows through a Slate MATERIAL brush (M_CapturedMaterial), and Slate multiplies a
-// material brush's output by the image's ColorAndOpacity tint, so a grey tint dims
-// the terrain uniformly -- day/night-consistent (BaseColor is time-independent) and
-// capture-safe (cannot black the capture out). Sweepable live via settings.txt.
-inline double g_terrain_brightness = 0.55;
+// Display-side brightness GAIN for the terrain render target. BaseColor (source 7)
+// is raw unlit albedo -- no capture-side exposure/tonemap applies to it, and it is
+// time-INDEPENDENT (identical day and night, which is the point of a static map).
+// The RT shows through a Slate MATERIAL brush (M_CapturedMaterial), and Slate
+// multiplies the material's output by the image's ColorAndOpacity tint, so this is
+// a uniform multiply: <1 dims (tame a blown-out midday), >1 brightens (lift a too-
+// dark albedo -- Kenny: "a little too dark during day"). One value covers day AND
+// night since BaseColor never changes with the sun. Sweepable live via settings.txt.
+inline double g_terrain_brightness = 1.3;
 // Rotate the map with the player (player-forward = up, "you" arrow fixed pointing
 // up) vs north-up (map fixed, arrow rotates to your facing). Default ROTATE: once
 // the rotation sign was fixed (90 + yaw -- the game's yaw is clockwise), Kenny asked
@@ -1885,7 +1886,7 @@ inline bool g_wp_on = false;
             num(L"MinimapTerrainSource", tsrc, 0.0, 9.0);
             g_terrain_source = static_cast<int>(tsrc);
             num(L"MinimapTerrainExposure", g_terrain_exposure, -10.0, 10.0);
-            num(L"MinimapTerrainBrightness", g_terrain_brightness, 0.05, 1.0);
+            num(L"MinimapTerrainBrightness", g_terrain_brightness, 0.05, 4.0);
             num(L"CompassX", g_compass_ox, 0.0, 4000.0);
             num(L"CompassY", g_compass_oy, 0.0, 4000.0);
             num(L"MenuButtonSize", g_menu_btn_size, 24.0, 96.0);
@@ -2100,9 +2101,10 @@ inline bool g_wp_on = false;
             f << L"# (source 2), in EV stops: 0 = neutral, positive = brighter, negative =\n";
             f << L"# darker. Tune one value so day + night both read. Ignored by BaseColor (7).\n";
             f << L"MinimapTerrainExposure=" << g_terrain_exposure << L"\n";
-            f << L"# MinimapTerrainBrightness = display dimmer for the terrain (0.05..1.0).\n";
-            f << L"# Lower = darker/less blown-out. Works on BaseColor (7) too, where the\n";
-            f << L"# exposure dial does nothing. Applied as a grey tint on the RT image.\n";
+            f << L"# MinimapTerrainBrightness = brightness gain for the terrain (0.05..4.0).\n";
+            f << L"# 1 = neutral, <1 dims (tame a blown-out midday), >1 brightens (lift a too-\n";
+            f << L"# dark albedo). One value covers day AND night on BaseColor (7), which never\n";
+            f << L"# changes with the sun. Applied as a colour multiply on the RT image.\n";
             f << L"MinimapTerrainBrightness=" << g_terrain_brightness << L"\n";
             f << L"# Rotate the map with you (1, player faces up) vs north-up (0). F6 toggles.\n";
             f << L"MinimapRotate=" << (g_minimap_rotate ? 1 : 0) << L"\n";
