@@ -444,6 +444,14 @@ inline bool g_wp_on = false;
         {
             FRotator_ ReturnValue{};
         };
+        // AActor::GetVelocity() -> FVector (cm/s == uu/s). Same shape as
+        // K2_GetActorLocation (no args, FVector return). The movement component's
+        // real velocity -- accurate and free of the position-delta noise (teleports,
+        // dt gaps, frame stutter) that an inferred speed suffers.
+        struct ParamsGetVelocity
+        {
+            FVector_ ReturnValue{};
+        };
         // UWidget::SetRenderTransformAngle(float) -- rotates about the render pivot,
         // clockwise degrees in screen space (UMG.hpp:1870).
         struct ParamsSetRenderTransformAngle
@@ -1640,14 +1648,21 @@ inline bool g_wp_on = false;
         std::vector<int> m_pending_layers;
         bool m_apply_pending = false;
         std::chrono::steady_clock::time_point m_apply_at{};
-        std::chrono::steady_clock::time_point m_next_hud_scan{};   // 0.5 Hz gate for the FindAllOf HUD scan
+        std::chrono::steady_clock::time_point m_next_hud_scan{};   // build_minimap's own rebuild-check gate
+        // Shared HUD root, resolved by ONE throttled find_player_hud (a full object-array
+        // walk) that both the minimap and compass reuse each frame -- they used to walk
+        // it separately, doubling the periodic hitch. Nulled on teardown to force a fresh
+        // walk. See hud_root().
+        UObject* m_hud_root = nullptr;
+        std::chrono::steady_clock::time_point m_next_hud_walk{};
         // Idle-skip: the last pose we actually drew the minimap for; skip the per-frame
         // arrow/dot work (and its Slate invalidation) while the player holds still.
         double m_mm_last_px = 0, m_mm_last_py = 0, m_mm_last_yaw = 0;
         bool m_mm_have_last = false;
-        // Auto-zoom: instantaneous player speed (uu/s, EMA-smoothed) from frame-to-
-        // frame position deltas, and the smoothed range multiplier eased toward the
-        // speed-derived target so zoom in/out glides instead of snapping.
+        // Auto-zoom: instantaneous player speed (uu/s, EMA-smoothed) -- the pawn's true
+        // GetVelocity when available, else a frame-to-frame position delta -- and the
+        // smoothed range multiplier eased toward the speed-derived target so zoom in/out
+        // glides instead of snapping. The px/py/t below back the position-delta fallback.
         double m_mm_speed_px = 0, m_mm_speed_py = 0;   // last speed sample
         std::chrono::steady_clock::time_point m_mm_speed_t{};
         bool m_mm_speed_have = false;
@@ -4712,15 +4727,60 @@ inline bool g_wp_on = false;
             return true;
         }
 
+        // World is not resolvable this frame (title screen, loading, or a world
+        // teardown -- leaving a server). Drop EVERY cached game-side UObject so the
+        // next frame re-resolves from a live root instead of writing to a freed slot.
+        // This closes the one crash class the minimap SEH guard cannot catch: a GC'd
+        // UObject slot gets REUSED by a new object, so the memory stays mapped and a
+        // write raises no access violation -- it silently corrupts the new object.
+        // SEH only catches writes to UNMAPPED memory; identity is the missing half.
+        // Mirrors the HUD-rebuild reset in build_minimap. Nulling a canvas (rather than
+        // RemoveFromParent) is safe: sweep_stale_hud_canvas drops any leftover on the
+        // next rebuild by its deterministic name.
+        auto invalidate_world_caches() -> void
+        {
+            m_mm_pc = nullptr;
+            m_hud_root = nullptr;         // force hud_root() to re-walk for the fresh HUD
+            m_minimap_canvas = nullptr;
+            m_minimap_frame = nullptr;
+            m_minimap_bg = nullptr;
+            m_minimap_you = nullptr;
+            m_you_arrowed = false;
+            m_mm_have_last = false;
+            m_minimap_dots.clear();
+            m_minimap_dot_slots.clear();
+            m_minimap_dot_icon.clear();
+            // The capture actor is GC'd with the world -- drop the pointers and let
+            // init_terrain re-spawn rather than teleport a dangling actor next frame.
+            m_terrain_tried = false;
+            m_terrain_actor = nullptr;
+            m_terrain_comp = nullptr;
+            m_terrain_rt = nullptr;
+            m_compass_canvas = nullptr;
+            m_compass_backing = nullptr;
+            m_compass_center = nullptr;
+            m_compass_markers.clear();
+            m_compass_marker_ix.clear();
+            m_compass_have_last = false;
+        }
+
         // Position AND facing for the per-frame minimap, with NO object-array walk in
         // the common path: resolve the controller via GetOwningPlayer on the cached
         // HUD canvas (see below), then one K2_GetPawn and read both location and
         // rotation off the pawn. Calling player_pos + player_yaw used to do two full
         // FindFirstOf walks per frame; even one walk/frame was the minimap's lag.
         // has_yaw is false when position succeeded but the rotation read did not.
-        auto player_pose(double& px, double& py, double& pz, double& yaw, bool& has_yaw) -> bool
+        // out_speed (optional) is filled with horizontal ground speed in uu/s from the
+        // pawn's GetVelocity, or left at -1 (sentinel) if the read fails so the caller
+        // can fall back to a position-delta estimate.
+        auto player_pose(double& px, double& py, double& pz, double& yaw, bool& has_yaw,
+                         double* out_speed = nullptr) -> bool
         {
             has_yaw = false;
+            if (out_speed)
+            {
+                *out_speed = -1.0;
+            }
             // The killer measured by the perf instrument: resolving the controller is a
             // FindFirstOf/GetOwningPlayer that ends up walking Palworld's huge object
             // array (~20 ms EACH). GetOwningPlayer off the canvas returns null on this
@@ -4757,6 +4817,10 @@ inline bool g_wp_on = false;
                 }
                 if (!pc || !Engine::call(pc, L"K2_GetPawn", gp) || !gp.ReturnValue)
                 {
+                    // No controller/pawn resolvable even after a fresh FindFirstOf -- the
+                    // world is gone or not yet up. Drop every stale UObject cache NOW so
+                    // no later tick this frame writes to a freed-then-reused slot.
+                    invalidate_world_caches();
                     return false;
                 }
             }
@@ -4790,6 +4854,17 @@ inline bool g_wp_on = false;
                     has_yaw = true;
                 }
                 m_mm_pc = nullptr;
+            }
+            // True ground speed off the movement component (accurate, no teleport/dt
+            // spikes). Horizontal magnitude only -- vertical (falling/gliding descent)
+            // should not widen the minimap. Left at -1 if GetVelocity is unavailable.
+            if (out_speed)
+            {
+                Engine::ParamsGetVelocity gv{};
+                if (Engine::call(gp.ReturnValue, L"GetVelocity", gv))
+                {
+                    *out_speed = std::hypot(gv.ReturnValue.X, gv.ReturnValue.Y);
+                }
             }
             return true;
         }
@@ -7218,6 +7293,24 @@ inline bool g_wp_on = false;
             return fallback;
         }
 
+        // Shared, throttled HUD-root resolver. find_player_hud is a FindAllOf (a full
+        // object-array walk, ~23 ms); the minimap AND compass both need the SAME root
+        // every frame, so walk at most ~0.2 Hz and hand both the cached result -- one
+        // walk per 5 s instead of two. Each caller still diffs the root's full name
+        // against its own cache to detect a HUD rebuild. invalidate_world_caches() nulls
+        // m_hud_root so a teardown forces an immediate re-walk (no 5 s blackout).
+        auto hud_root() -> UObject*
+        {
+            const auto now = std::chrono::steady_clock::now();
+            if (m_hud_root && now < m_next_hud_walk)
+            {
+                return m_hud_root;
+            }
+            m_next_hud_walk = now + std::chrono::milliseconds(5000);
+            m_hud_root = find_player_hud();
+            return m_hud_root;
+        }
+
         // Minimap (#26) SPIKE: prove a persistent widget can live on the gameplay
         // HUD. Draws only the frame -- a dark rounded square top-right with a gold
         // "you" dot at centre -- on WBP_PlayerUI's root canvas. The coordinate
@@ -7279,8 +7372,8 @@ inline bool g_wp_on = false;
             {
                 return;
             }
-            m_next_hud_scan = now + std::chrono::milliseconds(5000);   // ~23ms FindAllOf, so keep it rare
-            UObject* root = find_player_hud();
+            m_next_hud_scan = now + std::chrono::milliseconds(5000);   // rebuild-check gate
+            UObject* root = hud_root();   // shared throttled walk (compass reuses it)
             if (!root)
             {
                 return;
@@ -8045,33 +8138,41 @@ inline bool g_wp_on = false;
             {
                 return;
             }
-            double px = 0, py = 0, pz = 0, yaw = 0;
+            double px = 0, py = 0, pz = 0, yaw = 0, speed = -1.0;
             bool has_yaw = false;
-            if (!player_pose(px, py, pz, yaw, has_yaw))   // one PC+pawn walk, not two
+            if (!player_pose(px, py, pz, yaw, has_yaw, &speed))   // one PC+pawn walk, not two
             {
                 return;
             }
             const bool rotate = g_minimap_rotate && has_yaw;
 
-            // Speed-based auto-zoom. Sample how fast the player is moving from the
-            // world-position delta between frames, ramp a target multiplier from 1x
-            // (at rest / walk) to g_minimap_autozoom_max (mount/glider speed), then
-            // ease m_auto_zoom toward it so both zoom-out and zoom-in glide. Multiply
-            // only -- the F9/F10 base range is never overwritten.
+            // Speed-based auto-zoom. Prefer the pawn's TRUE velocity (accurate, no
+            // teleport/dt/stutter spikes); fall back to a frame-to-frame position delta
+            // only if GetVelocity is unavailable. Ramp a target multiplier from 1x (at
+            // rest / walk) to g_minimap_autozoom_max (mount/glider speed), then ease
+            // m_auto_zoom toward it so zoom in/out glides. Multiply only -- the F9/F10
+            // base range is never overwritten.
             double az_target = 1.0;
             {
                 const auto snow = std::chrono::steady_clock::now();
-                if (m_mm_speed_have)
+                double inst = speed;   // -1 when GetVelocity failed
+                if (inst < 0.0)
                 {
-                    const double dt = std::chrono::duration<double>(snow - m_mm_speed_t).count();
-                    // Skip gaps > 0.5 s (minimap toggled, HUD rebuild, fast-travel) so a
-                    // teleport-sized delta can't spike speed and flash the zoom out.
-                    if (dt > 0.0 && dt < 0.5)
+                    // Fallback path: infer speed from the world-position delta. Skip gaps
+                    // > 0.5 s (minimap toggled, HUD rebuild, fast-travel) so a teleport-
+                    // sized delta can't spike speed and flash the zoom out.
+                    if (m_mm_speed_have)
                     {
-                        const double inst = std::hypot(px - m_mm_speed_px, py - m_mm_speed_py) / dt;
-                        m_mm_speed += (inst - m_mm_speed) * 0.25;   // EMA: one stutter frame can't jerk the zoom
+                        const double dt = std::chrono::duration<double>(snow - m_mm_speed_t).count();
+                        inst = (dt > 0.0 && dt < 0.5) ? std::hypot(px - m_mm_speed_px, py - m_mm_speed_py) / dt
+                                                      : m_mm_speed;   // gap: hold last
+                    }
+                    else
+                    {
+                        inst = 0.0;
                     }
                 }
+                m_mm_speed += (inst - m_mm_speed) * 0.25;   // light EMA smooths per-frame jitter
                 m_mm_speed_px = px;
                 m_mm_speed_py = py;
                 m_mm_speed_t = snow;
@@ -8107,6 +8208,23 @@ inline bool g_wp_on = false;
                 // Rotate the capture with the player so the ground lines up with the
                 // spun dot field; fixed north in north-up mode.
                 tick_terrain(px, py, pz, rotate ? yaw : 0.0);
+            }
+            else if (m_terrain_actor)
+            {
+                // Terrain was toggled off but the capture actor is still parked -- it
+                // keeps rendering every frame (GPU cost) and is the most teardown-fragile
+                // object we own. Destroy it now: player_pose above just confirmed the
+                // world is alive, so K2_DestroyActor is safe here (a real world teardown
+                // takes the invalidate_world_caches path instead, which never calls it).
+                struct
+                {
+                } noargs;
+                Engine::call(m_terrain_actor, L"K2_DestroyActor", noargs);
+                m_terrain_actor = nullptr;
+                m_terrain_comp = nullptr;
+                m_terrain_rt = nullptr;
+                m_terrain_tried = false;
+                Output::send<LogLevel::Default>(STR("[Lodestone] terrain: capture actor destroyed (toggled off)\n"));
             }
 
             // "You" marker: upgrade the gold dot to the vanilla player arrow once icons
@@ -8275,8 +8393,34 @@ inline bool g_wp_on = false;
                 {
                     continue;
                 }
+                // Eggs/dungeons/lucky spawn/despawn/stream as you walk, so their POOL
+                // entry (a map-open snapshot) goes stale on the minimap exactly as it did
+                // on the compass. Skip the stale copy -- drawn LIVE from m_live_nearest
+                // just below, matching the compass's live injection.
+                if (d.layer_id == kEggLayer || d.layer_id == kDungeonLayer || d.layer_id == kLuckyLayer)
+                {
+                    continue;
+                }
                 place(static_cast<double>(d.wx), static_cast<double>(d.wy), d.icon, d.color);
             }
+            // Live actor layers: the nearest egg/dungeon/lucky from refresh_live_nearest's
+            // own scan (independent of the map-open pool), so the minimap tracks them as
+            // they move -- the same source the compass injects. Nearest-only (that is what
+            // the live scan keeps); works even before the first map open.
+            auto place_live = [&](int layer, const wchar_t* icon, const Engine::FLinearColor_& color) {
+                if (!is_layer_on(layer))
+                {
+                    return;
+                }
+                auto it = m_live_nearest.find(layer);
+                if (it != m_live_nearest.end() && it->second.valid)
+                {
+                    place(static_cast<double>(it->second.wx), static_cast<double>(it->second.wy), icon, color);
+                }
+            };
+            place_live(kEggLayer, nullptr, Engine::FLinearColor_{1.0f, 0.82f, 0.15f, 1.0f});
+            place_live(kDungeonLayer, kDungeonIcon, kDungeonColor);
+            place_live(kLuckyLayer, nullptr, kLuckyColor);
             for (size_t i = cursor; i < m_minimap_dots.size(); ++i)
             {
                 Engine::ParamsSetVisibility v{Engine::Vis_Collapsed};
@@ -8313,7 +8457,7 @@ inline bool g_wp_on = false;
                 return;   // built; only re-scan the HUD at ~0.2 Hz to catch a rebuild
             }
             m_next_compass_scan = now + std::chrono::milliseconds(5000);
-            UObject* root = find_player_hud();
+            UObject* root = hud_root();   // shared throttled walk (minimap reuses it)
             if (!root)
             {
                 return;
