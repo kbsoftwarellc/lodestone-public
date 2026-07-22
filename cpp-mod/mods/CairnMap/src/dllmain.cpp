@@ -1674,6 +1674,7 @@ inline bool g_wp_on = false;
         // Perf instrument: max build_minimap / tick_minimap cost over a ~5 s window.
         long long m_mm_build_max = 0, m_mm_tick_max = 0;
         std::chrono::steady_clock::time_point m_mm_next_log{};
+        std::chrono::steady_clock::time_point m_mm_dbg_at{};   // throttle for the dot-count diag
         // Cached player controller for the minimap -- resolving it is a ~20 ms object-
         // array walk, so it must never be per-frame. Cleared on HUD rebuild.
         UObject* m_mm_pc = nullptr;
@@ -8397,8 +8398,17 @@ inline bool g_wp_on = false;
                         Engine::ParamsSetBrushFromTexture b{tex, false};
                         Engine::call(dot, L"SetBrushFromTexture", b);
                         Style::make_image(dot, kMinimapDotPx);
+                        // The compass/map POI family (T_icon_compass_*, T_icon_map_*) is
+                        // vanilla's own FRAMED art (the blue diamond chest etc.) -- render it
+                        // full-colour so the frame reads crisply against the now-bright terrain,
+                        // like PalMiniMap. Flattening it to a single-colour silhouette (the glyph
+                        // tint) washed it out (Kenny: "icons disappeared" once the day map got
+                        // bright). Item/ore glyphs still tint with the layer colour.
+                        const bool framed = icon && (std::wstring_view(icon).starts_with(L"T_icon_compass_") ||
+                                                     std::wstring_view(icon).starts_with(L"T_icon_map_"));
                         Engine::ParamsSetColorAndOpacity c{
-                            Style::icon_is_glyph(icon) ? col : Engine::FLinearColor_{1.0f, 1.0f, 1.0f, 1.0f}};
+                            (Style::icon_is_glyph(icon) && !framed) ? col
+                                                                    : Engine::FLinearColor_{1.0f, 1.0f, 1.0f, 1.0f}};
                         Engine::call(dot, L"SetColorAndOpacity", c);
                     }
                     else
@@ -8474,6 +8484,16 @@ inline bool g_wp_on = false;
             place_live(kEggLayer, nullptr, Engine::FLinearColor_{1.0f, 0.82f, 0.15f, 1.0f});
             place_live(kDungeonLayer, kDungeonIcon, kDungeonColor);
             place_live(kLuckyLayer, nullptr, kLuckyColor);
+            // DIAG: is the vanishing a PLACEMENT problem (cursor==0) or a RENDER/visibility
+            // one (cursor>0 but nothing on screen)? Log the placed count + the geometry so
+            // one relaunch settles it.
+            if (now >= m_mm_dbg_at)
+            {
+                m_mm_dbg_at = now + std::chrono::seconds(3);
+                Output::send<LogLevel::Default>(
+                    STR("[Lodestone] minimap dots: placed={} pool={} icons_ready={} rotate={} effR={:.0f}uu zoom={:.2f} half={:.0f}\n"),
+                    cursor, m_minimap_dots.size(), icons ? 1 : 0, rotate ? 1 : 0, eff_range, m_auto_zoom, half);
+            }
             for (size_t i = cursor; i < m_minimap_dots.size(); ++i)
             {
                 Engine::ParamsSetVisibility v{Engine::Vis_Collapsed};
