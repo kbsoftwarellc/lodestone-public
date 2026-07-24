@@ -7903,11 +7903,15 @@ inline bool g_wp_on = false;
             m_next_capture_clean = now + std::chrono::milliseconds(800);
 
             // The terrain actor classes to keep. Landscape = the ground heightmap chunks
-            // (the relief + biome colour); foliage = grass/trees; static meshes = buildings,
-            // placed rocks, cliffs. Everything else (billboards, pals, NPCs) is excluded by
-            // simply not being on the list.
+            // (the relief + biome colour); foliage = grass/trees; decals = the worn dirt
+            // paths + base clearing painted on the ground (this is what made the terrain
+            // "match" the old look). StaticMeshActor was DROPPED: 3420 of them spiked the
+            // minimap tick to ~55 ms (ShowOnlyActorComponents call-storm) AND some white-
+            // albedo props/POI meshes were the leftover white boxes. Buildings therefore do
+            // not render into the minimap -- a clean natural-terrain map. Everything else
+            // (billboards, pals, NPCs) is excluded by simply not being on the list.
             static const wchar_t* const kKeep[] = {L"LandscapeStreamingProxy", L"InstancedFoliageActor",
-                                                   L"StaticMeshActor"};
+                                                   L"DecalActor"};
             constexpr int kKeepN = 3;
             const wchar_t* cls = kKeep[m_capture_clean_idx];
 
