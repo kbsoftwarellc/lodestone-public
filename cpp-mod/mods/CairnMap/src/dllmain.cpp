@@ -116,7 +116,13 @@ inline bool g_minimap_terrain = false;
 // fog), 0 = SceneColorHDR, 7 = BaseColor (unlit albedo -- no fog/lighting, the
 // leading fix for the yellow haze).
 inline double g_terrain_height = 12000.0;   // 120 m
-inline int g_terrain_source = 7;            // SCS_BaseColor
+// SCS_FinalColorLDR. BaseColor(7) was tried for a time-independent "static" map and it
+// LOOKED right in daylight, but it renders only albedo: every emissive/UI-ish material
+// (the world's POI sprites) has no BaseColor, so they came out as flat BLACK and WHITE
+// BOXES -- Kenny's "black boxes". Lit FinalColorLDR draws them as their real coloured
+// art, exactly like PalMiniMap, and keeps water/ocean + structures reading correctly.
+// Day/night variance is handled by the exposure dial below, not by giving up lighting.
+inline int g_terrain_source = 2;            // SCS_FinalColorLDR
 // Lit source (FinalColorLDR=2) keeps emissive POI icons coloured (BaseColor=7 shows
 // albedo only -> those icons go black), but the bright top-down view can blow out.
 // Auto-exposure ADAPT was tried (let night brighten, day darken) but never fired: a
@@ -1891,7 +1897,10 @@ inline bool g_wp_on = false;
             num(L"MinimapY", g_minimap_oy, 0.0, 4000.0);
             num(L"MinimapSize", g_minimap_px, 80.0, 600.0);
             double range_m = g_minimap_range_uu / 100.0;   // settings are in metres
-            num(L"MinimapRange", range_m, 40.0, 1500.0);   // 40 m floor: keep live-capture pals small
+            // 40 m floor: keep live-capture pals small. 200 m ceiling matches the F9/F10 clamp
+            // so a range that already crept past it (a saved 251 m framed a 6x wider area than
+            // PalMiniMap and cost ~48 ms/tick to capture) is pulled back on load.
+            num(L"MinimapRange", range_m, 40.0, 200.0);
             g_minimap_range_uu = range_m * 100.0;
             num(L"MinimapAutoZoomMax", g_minimap_autozoom_max, 1.0, 6.0);
             num(L"CompassWidth", g_compass_w, 200.0, 3000.0);
@@ -1903,6 +1912,17 @@ inline bool g_wp_on = false;
             double tsrc = g_terrain_source;
             num(L"MinimapTerrainSource", tsrc, 0.0, 9.0);
             g_terrain_source = static_cast<int>(tsrc);
+            // Self-heal a saved BaseColor(7): it renders emissive/UI materials with no albedo,
+            // so the world's POI sprites came out as flat BLACK/WHITE BOXES on the minimap.
+            // Anyone who tried 7 has it persisted in settings.txt, which would otherwise
+            // override the fixed default forever -- force it back to lit FinalColorLDR.
+            if (g_terrain_source == 7)
+            {
+                g_terrain_source = 2;
+                Output::send<LogLevel::Warning>(
+                    STR("[Lodestone] MinimapTerrainSource=7 (BaseColor) renders POI sprites as black boxes; "
+                        "using 2 (FinalColorLDR) instead\n"));
+            }
             num(L"MinimapTerrainExposure", g_terrain_exposure, -10.0, 10.0);
             num(L"MinimapTerrainBrightness", g_terrain_brightness, 0.05, 4.0);
             num(L"CompassX", g_compass_ox, 0.0, 4000.0);
@@ -7853,16 +7873,17 @@ inline bool g_wp_on = false;
                 // since even BaseColor (no fog/lighting) came back flat.
                 if (auto* v = m_terrain_comp->GetValuePtrByPropertyNameInChain<uint8_t>(STR("bAlwaysPersistRenderingState")))
                     *v = 1;
-                // Render ONLY a whitelist of terrain actors (PRM_UseShowOnlyList=2).
-                // PRM_RenderScenePrimitives(1) + HiddenActors/HiddenComponents was tried and
-                // PROVEN NOT RESPECTED by this capture: the sweep hid 513 matbillboards + 86
-                // billboards + 112 pals every cycle (log-confirmed) yet they all still rendered
-                // as black/white boxes + full pals. The inverse works: mode 2 renders nothing
-                // but the show-only list, which clean_terrain_capture() fills with landscape /
-                // foliage / static meshes -- so POI billboards, pals, and NPCs simply cannot
-                // appear. The list starts empty (sky) and fills within ~2.4 s.
+                // Render ALL scene primitives (PRM_RenderScenePrimitives=1). A show-only
+                // WHITELIST (mode 2, landscape+foliage+decals) was tried to suppress the boxes
+                // and it made the map UNRECOGNISABLE: anything unlisted -- the OCEAN/water
+                // bodies, structures, unstreamed chunks -- rendered as black voids, so the
+                // minimap looked like a patchwork of a different place (Kenny: "I don't know
+                // where this is, the ocean isn't even around"). The boxes were never a
+                // primitive-filtering problem: they were BaseColor(7) showing no albedo for
+                // emissive materials. Lit FinalColorLDR fixes them at the source, so render
+                // everything and let the capture look like the world.
                 if (auto* v = m_terrain_comp->GetValuePtrByPropertyNameInChain<uint8_t>(STR("PrimitiveRenderMode")))
-                    *v = 2;
+                    *v = 1;
                 // Unlimited view distance so the ground below is never far-clipped.
                 if (auto* v = m_terrain_comp->GetValuePtrByPropertyNameInChain<float>(STR("MaxViewDistanceOverride")))
                     *v = -1.0f;
@@ -8115,7 +8136,12 @@ inline bool g_wp_on = false;
                 // real 3-D pals near the player render into it; zooming in shrinks OrthoWidth
                 // and those pals balloon. 40 m keeps them small (unlike PalMiniMap, which
                 // captures terrain only + draws pal ICONS, our capture is the whole scene).
-                g_minimap_range_uu = std::clamp(g_minimap_range_uu * std::pow(1.25, z), 4000.0, 150000.0);
+                // Ceiling 20000 uu (200 m), down from 150000 (1.5 km). Every F10 step MULTIPLIES
+                // and persists, so the base range crept to 251 m -- the minimap then framed a 6x
+                // wider area than PalMiniMap ("showing a different part of the map") and the
+                // capture had to render a 503 m ortho every frame (~48 ms tick). 200 m is past
+                // any useful navigation range and keeps both problems out of reach.
+                g_minimap_range_uu = std::clamp(g_minimap_range_uu * std::pow(1.25, z), 4000.0, 20000.0);
                 save_settings();
             }
             if (m_minimap_rotate_req.exchange(false))   // F6
@@ -8320,13 +8346,13 @@ inline bool g_wp_on = false;
                 // Rotate the capture with the player so the ground lines up with the
                 // spun dot field; fixed north in north-up mode.
                 tick_terrain(px, py, pz, rotate ? yaw : 0.0);
-                // Strip the world's in-world POI billboards / floating icons / pals out
-                // of the CAPTURE (round-robin, self-throttled) so the minimap shows clean
-                // terrain instead of black/white boxes. In BaseColor (source 7) mode those
-                // vanilla POI sprites render as flat dark/light squares -- Kenny: "the
-                // icons disappeared" was actually these boxes crowding out our own dots.
-                // Our layer dots draw ON TOP; the capture should be terrain only.
-                clean_terrain_capture();
+                // NOTE: no capture-contents sweep here. Both directions were tried and both
+                // failed: the HiddenActors/HiddenComponents BLACKLIST was silently ignored by
+                // this capture (it hid 513 matbillboards + 86 billboards + 112 pals per cycle
+                // and they all still rendered), and the ShowOnly WHITELIST blacked out the
+                // ocean + structures. The boxes are fixed at the source instead, by capturing
+                // lit (FinalColorLDR) rather than BaseColor. Dropping the sweep also removes a
+                // per-2.4s FindAllOf storm that had pushed the minimap tick to ~48 ms.
             }
             else if (m_terrain_actor)
             {
