@@ -365,6 +365,15 @@ inline bool g_wp_on = false;
         {
             UObject* InComponent{};
         };
+        // USceneCaptureComponent::ShowOnlyActorComponents(AActor*, bool) -- with
+        // PRM_UseShowOnlyList, adds an actor's primitive components to the render whitelist.
+        // Same layout as HideActorComponents (AActor* @0x00, bool @0x08). We whitelist the
+        // landscape/foliage/static-mesh actors so ONLY terrain renders into the capture.
+        struct ParamsShowOnlyActorComponents
+        {
+            UObject* InActor{};
+            bool bIncludeFromChildActors{};
+        };
         struct ParamsSetIsChecked
         {
             bool InIsChecked{};
@@ -7770,11 +7779,16 @@ inline bool g_wp_on = false;
                 // since even BaseColor (no fog/lighting) came back flat.
                 if (auto* v = m_terrain_comp->GetValuePtrByPropertyNameInChain<uint8_t>(STR("bAlwaysPersistRenderingState")))
                     *v = 1;
-                // Render ALL scene primitives (PRM_RenderScenePrimitives=1). A wrong
-                // default of PRM_UseShowOnlyList with an empty ShowOnlyActors would render
-                // nothing but sky -> a flat colour, one candidate for the yellow.
+                // Render ONLY a whitelist of terrain actors (PRM_UseShowOnlyList=2).
+                // PRM_RenderScenePrimitives(1) + HiddenActors/HiddenComponents was tried and
+                // PROVEN NOT RESPECTED by this capture: the sweep hid 513 matbillboards + 86
+                // billboards + 112 pals every cycle (log-confirmed) yet they all still rendered
+                // as black/white boxes + full pals. The inverse works: mode 2 renders nothing
+                // but the show-only list, which clean_terrain_capture() fills with landscape /
+                // foliage / static meshes -- so POI billboards, pals, and NPCs simply cannot
+                // appear. The list starts empty (sky) and fills within ~2.4 s.
                 if (auto* v = m_terrain_comp->GetValuePtrByPropertyNameInChain<uint8_t>(STR("PrimitiveRenderMode")))
-                    *v = 1;
+                    *v = 2;
                 // Unlimited view distance so the ground below is never far-clipped.
                 if (auto* v = m_terrain_comp->GetValuePtrByPropertyNameInChain<float>(STR("MaxViewDistanceOverride")))
                     *v = -1.0f;
@@ -7866,14 +7880,15 @@ inline bool g_wp_on = false;
             Output::send<LogLevel::Default>(STR("[Lodestone] terrain: SceneCapture2D spawned + wired\n"));
         }
 
-        // Strip the dynamic scene -- pals, players, NPCs, floating UI icons (the palbox
-        // diamond), base beacons -- out of the terrain CAPTURE only, so the minimap reads
-        // like a clean map instead of a top-down photo. HideActorComponents/HideComponent
-        // touch this capture, not the main view. PalMiniMap's clean look = terrain capture
-        // + icon overlays; this gets us the terrain half. Round-robin ONE FindAllOf per
-        // fire (each ~20 ms -- see the minimap perf note) so there is no periodic stutter;
-        // each class is re-swept ~every 2.4 s, fine since these stream in slowly. The
-        // hidden lists AddUnique, so re-firing does not grow them unbounded.
+        // Whitelist the terrain into the CAPTURE (PRM_UseShowOnlyList): the capture renders
+        // ONLY the actors whose components we add here, so pals / NPCs / POI billboards /
+        // floating UI sprites simply never appear -- a clean map, not a top-down photo. The
+        // opposite (HideActorComponents/HideComponent blacklist) was tried and PROVEN not
+        // respected by this capture. Round-robin ONE FindAllOf per fire (each ~20 ms -- see
+        // the minimap perf note) so there is no periodic stutter; each class re-sweeps
+        // ~every 2.4 s, which ALSO catches newly world-partition-streamed terrain chunks as
+        // the player travels. ShowOnly lists AddUnique, so re-firing never grows them
+        // unbounded (unloaded chunks leave harmless stale weak pointers).
         auto clean_terrain_capture() -> void
         {
             if (!m_terrain_comp || !g_minimap_terrain)
@@ -7887,71 +7902,33 @@ inline bool g_wp_on = false;
             }
             m_next_capture_clean = now + std::chrono::milliseconds(800);
 
+            // The terrain actor classes to keep. Landscape = the ground heightmap chunks
+            // (the relief + biome colour); foliage = grass/trees; static meshes = buildings,
+            // placed rocks, cliffs. Everything else (billboards, pals, NPCs) is excluded by
+            // simply not being on the list.
+            static const wchar_t* const kKeep[] = {L"LandscapeStreamingProxy", L"InstancedFoliageActor",
+                                                   L"StaticMeshActor"};
+            constexpr int kKeepN = 3;
+            const wchar_t* cls = kKeep[m_capture_clean_idx];
+
             std::vector<UObject*> found;
-            const wchar_t* what = L"";
-            if (m_capture_clean_idx == 0)
+            UObjectGlobals::FindAllOf(cls, found);
+            for (auto* a : found)
             {
-                UObjectGlobals::FindAllOf(STR("PalCharacter"), found);
-                what = L"pals";
-                for (auto* a : found)
+                if (a)
                 {
-                    if (a)
-                    {
-                        Engine::ParamsHideActorComponents p{a, true};
-                        Engine::call(m_terrain_comp, L"HideActorComponents", p);
-                    }
+                    Engine::ParamsShowOnlyActorComponents p{a, true};
+                    Engine::call(m_terrain_comp, L"ShowOnlyActorComponents", p);
                 }
             }
-            else if (m_capture_clean_idx == 1)
-            {
-                UObjectGlobals::FindAllOf(STR("WidgetComponent"), found);
-                what = L"widgets";
-                for (auto* c : found)
-                {
-                    if (c)
-                    {
-                        Engine::ParamsHideComponent p{c};
-                        Engine::call(m_terrain_comp, L"HideComponent", p);
-                    }
-                }
-            }
-            else if (m_capture_clean_idx == 2)
-            {
-                UObjectGlobals::FindAllOf(STR("MaterialBillboardComponent"), found);
-                what = L"matbillboards";
-                for (auto* c : found)
-                {
-                    if (c)
-                    {
-                        Engine::ParamsHideComponent p{c};
-                        Engine::call(m_terrain_comp, L"HideComponent", p);
-                    }
-                }
-            }
-            else
-            {
-                // Plain UBillboardComponent (not just the Material variant): the POI-marker
-                // world sprites the SceneCapture actually renders are billboard primitives.
-                // FindAllOf is exact-class per the census work, so sweep this base name too.
-                UObjectGlobals::FindAllOf(STR("BillboardComponent"), found);
-                what = L"billboards";
-                for (auto* c : found)
-                {
-                    if (c)
-                    {
-                        Engine::ParamsHideComponent p{c};
-                        Engine::call(m_terrain_comp, L"HideComponent", p);
-                    }
-                }
-            }
-            m_capture_clean_idx = (m_capture_clean_idx + 1) % 4;
+            m_capture_clean_idx = (m_capture_clean_idx + 1) % kKeepN;
             static int logn = 0;
             if (logn < 12)
             {
                 ++logn;
                 Output::send<LogLevel::Default>(
-                    STR("[Lodestone] terrain clean: hid {} {} from capture\n"),
-                    static_cast<int>(found.size()), what);
+                    STR("[Lodestone] terrain show-only: kept {} {} in capture\n"),
+                    static_cast<int>(found.size()), cls);
             }
         }
 
