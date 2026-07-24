@@ -1465,12 +1465,20 @@ inline bool g_wp_on = false;
         // User waypoint (F3): a single sticky "go here" target injected onto the compass. No
         // static data and no map dot in v1 -- it lives only on the compass strip.
         static constexpr int kWaypointLayer = 1009;
+        // Schematic puzzle towers: ABP_LevelObject_ItemPickupTower_C -- the ancient-shrine
+        // pedestals whose panel puzzle rewards a Blueprint_* item (the "Schematic" the UI
+        // names). World-partition streamed like dungeons, so FindAllOf returns the nearby
+        // ones; no static location table exists. Reward icon = the generic blueprint art.
+        static constexpr int kSchematicLayer = 1010;
+        static constexpr const wchar_t* kSchematicIcon = L"T_itemicon_Material_Blueprint";
+        static constexpr Engine::FLinearColor_ kSchematicColor{0.35f, 0.80f, 1.0f, 1.0f};   // tech sky-blue
+        static constexpr size_t kSchematicMaxDots = 20;
 
         static constexpr ExtraLayer kExtraLayers[] = {
             {kEffigyLayer, L"Effigies"},      {kNoteLayer, L"Notes"},   {kEggLayer, L"Eggs"},
             {kFastTravelLayer, L"FastTravel"}, {kTowerLayer, L"Tower"}, {kSealedLayer, L"SealedRealm"},
             {kPalSpeciesLayer, L"Pal"}, {kDungeonLayer, L"Dungeon"}, {kLuckyLayer, L"Lucky"},
-            {kWaypointLayer, L"Waypoint"}};
+            {kWaypointLayer, L"Waypoint"}, {kSchematicLayer, L"Schematic"}};
         // Dynamic panel label for the Pal layer ("Pal: <name>"); a member so its
         // c_str() outlives the panel build. Rebuilt in panel_items from g_track_pal.
         std::wstring m_pal_label = L"Pal";
@@ -2423,6 +2431,7 @@ inline bool g_wp_on = false;
                 v.push_back({PanelItem::Row, L"Syndicate Towers", kTowerLayer, kTowerIcon, 1.0f, 0.45f, 0.85f});
                 v.push_back({PanelItem::Row, L"Sealed Realms", kSealedLayer, kSealedIcon, 0.70f, 0.55f, 1.0f});
                 v.push_back({PanelItem::Row, L"Dungeons", kDungeonLayer, kDungeonIcon, 0.35f, 0.85f, 0.75f});
+                v.push_back({PanelItem::Row, L"Schematics", kSchematicLayer, kSchematicIcon, 0.35f, 0.80f, 1.0f});
                 v.push_back({PanelItem::Row, L"Lucky Pals", kLuckyLayer, nullptr, 1.0f, 0.84f, 0.20f});
             }
             else if (m_active_tab == 1)   // EFFIGIES tab: on/off summary + a type radio
@@ -3358,6 +3367,7 @@ inline bool g_wp_on = false;
             resolve_one(kTowerIcon);
             resolve_one(kSealedIcon);
             resolve_one(kDungeonIcon);
+            resolve_one(kSchematicIcon);
             resolve_one(L"T_icon_map_player");   // minimap heading arrow
 
             if (resolved == want)
@@ -3636,6 +3646,64 @@ inline bool g_wp_on = false;
             return shown;
         }
 
+        // Nearest schematic puzzle towers. Source: FindAllOf(BP_LevelObject_ItemPickupTower_C)
+        // -- world-partition streamed, so FindAllOf returns only the nearby loaded ones (no
+        // static location table exists). Nearest-cap + bounds cull mirror place_nearest_dungeons;
+        // compass + minimap + nearest readout pick these up via kSchematicLayer for free.
+        auto place_nearest_schematics(UClass* image_class) -> size_t
+        {
+            if (!m_calibration)
+            {
+                return 0;
+            }
+            std::vector<UObject*> objs;
+            UObjectGlobals::FindAllOf(STR("BP_LevelObject_ItemPickupTower_C"), objs);
+            std::vector<std::pair<double, double>> pts;
+            for (auto* o : objs)
+            {
+                if (!o)
+                {
+                    continue;
+                }
+                double wx = 0, wy = 0, wz = 0;
+                if (!Engine::actor_location(o, wx, wy, wz) || (wx == 0.0 && wy == 0.0))
+                {
+                    continue;
+                }
+                pts.push_back({wx, wy});
+            }
+            const size_t total = pts.size();
+            double px = 0, py = 0, pz = 0;
+            if (player_pos(px, py, pz) && pts.size() > kSchematicMaxDots)
+            {
+                std::nth_element(pts.begin(), pts.begin() + kSchematicMaxDots, pts.end(),
+                                 [px, py](const auto& a, const auto& b) {
+                                     const double da = (a.first - px) * (a.first - px) +
+                                                       (a.second - py) * (a.second - py);
+                                     const double db = (b.first - px) * (b.first - px) +
+                                                       (b.second - py) * (b.second - py);
+                                     return da < db;
+                                 });
+                pts.resize(kSchematicMaxDots);
+            }
+            size_t shown = 0;
+            for (const auto& [wx, wy] : pts)
+            {
+                const auto pos = m_calibration->transform.apply(wx, wy);
+                if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
+                {
+                    continue;
+                }
+                if (emit_dot(image_class, pos, {wx, wy}, kSchematicColor, kSchematicIcon, kPoiDotPx, true,
+                             kSchematicLayer) != SIZE_MAX)
+                {
+                    ++shown;
+                }
+            }
+            Output::send<LogLevel::Default>(STR("[Lodestone] schematics: {} of {} nearby placed\n"), shown, total);
+            return shown;
+        }
+
         // Scan the streamed-in PalCharacter actors, keep only the rare ("lucky") ones, and
         // return the nearest to (px,py) in world units. rare/total feed the viability probe
         // log (are lucky pals even visible on a dedicated-server client?). IsRarePal is a
@@ -3788,7 +3856,7 @@ inline bool g_wp_on = false;
                 return;
             }
             const int slot = m_live_scan_idx;
-            m_live_scan_idx = (m_live_scan_idx + 1) % 3;
+            m_live_scan_idx = (m_live_scan_idx + 1) % 4;
             auto scan = [&](int layer, const wchar_t* cls) {
                 if (!is_layer_on(layer))
                 {
@@ -3806,6 +3874,10 @@ inline bool g_wp_on = false;
             else if (slot == 1)
             {
                 scan(kDungeonLayer, STR("PalDungeonEntrance"));
+            }
+            else if (slot == 2)
+            {
+                scan(kSchematicLayer, STR("BP_LevelObject_ItemPickupTower_C"));
             }
             else
             {
@@ -3846,8 +3918,8 @@ inline bool g_wp_on = false;
                     return (it != m_live_nearest.end() && it->second.valid) ? it->second.dist / 100.0 : -1.0;
                 };
                 Output::send<LogLevel::Default>(
-                    STR("[Lodestone] live nearest (no map): egg={:.0f}m dungeon={:.0f}m lucky={:.0f}m\n"),
-                    dm(kEggLayer), dm(kDungeonLayer), dm(kLuckyLayer));
+                    STR("[Lodestone] live nearest (no map): egg={:.0f}m dungeon={:.0f}m schematic={:.0f}m lucky={:.0f}m\n"),
+                    dm(kEggLayer), dm(kDungeonLayer), dm(kSchematicLayer), dm(kLuckyLayer));
             }
         }
 
@@ -5576,6 +5648,7 @@ inline bool g_wp_on = false;
             placed += place_live_pois(image_class);
             placed += place_tracked_pal(image_class);   // track-one-Pal spawn points
             placed += place_nearest_dungeons(image_class);   // nearest cave entrances (Build 1.7)
+            placed += place_nearest_schematics(image_class);   // nearest schematic puzzle towers
             placed += place_nearest_lucky(image_class);   // nearest lucky/rare wild Pal (Build B)
             // collapse any leftover pooled dots beyond this pass
             for (size_t i = m_emit_cursor; i < m_dots.size(); ++i)
@@ -5657,7 +5730,7 @@ inline bool g_wp_on = false;
             // m_live_begin -- re-emitting into a still-present range trips emit_dot's
             // "layer resumed non-contiguously" guard and disables per-layer ranges pool-wide.
             for (int lid : {kEggLayer, kFastTravelLayer, kTowerLayer, kSealedLayer, kPalSpeciesLayer,
-                            kDungeonLayer, kLuckyLayer})
+                            kDungeonLayer, kSchematicLayer, kLuckyLayer})
             {
                 m_layer_ranges.erase(lid);
             }
@@ -5666,6 +5739,7 @@ inline bool g_wp_on = false;
             placed += place_live_pois(image_class);
             placed += place_tracked_pal(image_class);
             placed += place_nearest_dungeons(image_class);
+            placed += place_nearest_schematics(image_class);
             placed += place_nearest_lucky(image_class);
             // A shorter tail than last open (an egg picked up, a tower unlocked) leaves stale
             // dots beyond the new cursor -- collapse them. Everything below m_live_begin (<=
@@ -8464,7 +8538,8 @@ inline bool g_wp_on = false;
                 // entry (a map-open snapshot) goes stale on the minimap exactly as it did
                 // on the compass. Skip the stale copy -- drawn LIVE from m_live_nearest
                 // just below, matching the compass's live injection.
-                if (d.layer_id == kEggLayer || d.layer_id == kDungeonLayer || d.layer_id == kLuckyLayer)
+                if (d.layer_id == kEggLayer || d.layer_id == kDungeonLayer ||
+                    d.layer_id == kSchematicLayer || d.layer_id == kLuckyLayer)
                 {
                     continue;
                 }
@@ -8487,6 +8562,7 @@ inline bool g_wp_on = false;
             };
             place_live(kEggLayer, nullptr, Engine::FLinearColor_{1.0f, 0.82f, 0.15f, 1.0f});
             place_live(kDungeonLayer, kDungeonIcon, kDungeonColor);
+            place_live(kSchematicLayer, kSchematicIcon, kSchematicColor);
             place_live(kLuckyLayer, nullptr, kLuckyColor);
             // DIAG: is the vanishing a PLACEMENT problem (cursor==0) or a RENDER/visibility
             // one (cursor>0 but nothing on screen)? Log the placed count + the geometry so
@@ -8712,6 +8788,7 @@ inline bool g_wp_on = false;
                 static const LiveMeta kLiveMeta[] = {
                     {kEggLayer, nullptr, {1.0f, 0.82f, 0.15f, 1.0f}},
                     {kDungeonLayer, kDungeonIcon, kDungeonColor},
+                    {kSchematicLayer, kSchematicIcon, kSchematicColor},
                     {kLuckyLayer, nullptr, kLuckyColor},
                 };
                 for (const auto& lm : kLiveMeta)
