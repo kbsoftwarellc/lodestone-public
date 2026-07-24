@@ -115,6 +115,10 @@ inline bool g_minimap_terrain = false;
 // (low). Source is the ESceneCaptureSource: 2 = FinalColorLDR (tonemapped, includes
 // fog), 0 = SceneColorHDR, 7 = BaseColor (unlit albedo -- no fog/lighting, the
 // leading fix for the yellow haze).
+// Schematic puzzle towers: hide the ones this player has already solved (1 = on, the
+// point of the layer -- show what is still out there). 0 shows every nearby tower.
+// Solved state comes from the player record's ItemPickupObtainForInstanceFlag.
+inline bool g_schematic_hide_found = true;
 inline double g_terrain_height = 12000.0;   // 120 m
 // SCS_FinalColorLDR. BaseColor(7) was tried for a time-independent "static" map and it
 // LOOKED right in daylight, but it renders only albedo: every emissive/UI-ish material
@@ -1420,6 +1424,60 @@ inline bool g_wp_on = false;
             }
             return true;
         }
+
+        // The LOCAL player's SOLVED schematic puzzle towers: ItemPickupObtainForInstanceFlag
+        // (Pal.hpp:32007), the same per-instance bool-array family as the relic/note flags,
+        // keyed by each tower's LevelObjectInstanceId GUID. Lets the Schematic layer drop the
+        // towers already looted, so the map shows only what is still out there.
+        inline auto gather_itempickup(std::unordered_set<std::wstring>& out) -> bool
+        {
+            static Offsets off;
+            if (!resolve(off))
+            {
+                return false;
+            }
+            auto* util_cdo =
+                UObjectGlobals::StaticFindObject(nullptr, nullptr, STR("/Script/Pal.Default__PalUtility"));
+            auto* world_ctx = UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
+            if (!util_cdo || !world_ctx)
+            {
+                return false;
+            }
+            struct
+            {
+                UObject* WorldContextObject{};
+                UObject* ReturnValue{};
+            } rec{world_ctx, nullptr};
+            if (!Engine::call(util_cdo, L"GetLocalRecordData", rec) || !rec.ReturnValue)
+            {
+                return false;
+            }
+            auto* wrapper =
+                rec.ReturnValue->GetValuePtrByPropertyNameInChain<uint8_t>(STR("ItemPickupObtainForInstanceFlag"));
+            if (!wrapper)
+            {
+                return false;
+            }
+            struct RawArray
+            {
+                uint8_t* data;
+                int32_t num;
+                int32_t max;
+            };
+            const auto* arr = reinterpret_cast<const RawArray*>(wrapper + off.items);
+            out.clear();
+            for (int32_t i = 0; i < arr->num; ++i)
+            {
+                const uint8_t* item = arr->data + static_cast<size_t>(i) * off.item_size;
+                if (*(item + off.value) == 0)
+                {
+                    continue;
+                }
+                const auto* key = reinterpret_cast<const FName*>(item + off.key);
+                out.insert(key->ToString());
+            }
+            return true;
+        }
     } // namespace Collected
 
     // ---------------------------------------------------------------- the mod
@@ -2008,6 +2066,10 @@ inline bool g_wp_on = false;
             {
                 g_lucky_sound = (it->second == L"1");
             }
+            if (auto it = raw.find(L"SchematicHideFound"); it != raw.end())
+            {
+                g_schematic_hide_found = (it->second == L"1");
+            }
             if (auto it = raw.find(L"CompassAnchor"); it != raw.end() && it->second.size() == 2)
             {
                 // Two-letter code: vertical (T/C/B) then horizontal (L/C/R).
@@ -2173,6 +2235,9 @@ inline bool g_wp_on = false;
             f << L"# LuckySound = 1 alerts when the nearest lucky (rare) wild Pal comes within\n";
             f << L"# ~300m. Interim is a log line; a real in-game sound comes in a follow-up.\n";
             f << L"LuckySound=" << (g_lucky_sound ? 1 : 0) << L"\n";
+            f << L"# SchematicHideFound = 1 drops schematic puzzle towers you have already\n";
+            f << L"# solved, so the Schematic layer is a 'what's left' list. 0 shows them all.\n";
+            f << L"SchematicHideFound=" << (g_schematic_hide_found ? 1 : 0) << L"\n";
             f << L"# CompassLiveSec = how often eggs/dungeons/lucky refresh on the compass WITHOUT\n";
             f << L"# opening the map (seconds). Lower = snappier, higher = less CPU. Default 6.\n";
             f << L"CompassLiveSec=" << g_compass_live_sec << L"\n";
@@ -3666,6 +3731,41 @@ inline bool g_wp_on = false;
             return shown;
         }
 
+        // Solved-schematic set, refreshed off the player record. Cheap but not free (a
+        // ProcessEvent + array walk), so re-read at most every 3 s -- the flag only changes
+        // when the player actually loots a tower.
+        std::unordered_set<std::wstring> m_schematic_done;
+        std::chrono::steady_clock::time_point m_next_schematic_flags{};
+
+        auto refresh_schematic_done() -> void
+        {
+            const auto now = std::chrono::steady_clock::now();
+            if (now < m_next_schematic_flags)
+            {
+                return;
+            }
+            m_next_schematic_flags = now + std::chrono::seconds(3);
+            std::unordered_set<std::wstring> got;
+            if (Collected::gather_itempickup(got))
+            {
+                m_schematic_done = std::move(got);
+            }
+        }
+
+        // Has this player already solved this tower? Keyed by the actor's own
+        // LevelObjectInstanceId (APalLevelObjectActor, Pal.hpp:11545) -- the same GUID the
+        // record's ItemPickupObtainForInstanceFlag entries are named after, so this matches
+        // the way collected effigies/notes are dropped.
+        auto schematic_is_done(UObject* actor) -> bool
+        {
+            if (!actor || m_schematic_done.empty())
+            {
+                return false;
+            }
+            const auto* g = actor->GetValuePtrByPropertyNameInChain<uint32_t>(STR("LevelObjectInstanceId"));
+            return g && m_schematic_done.contains(Collected::guid_key(g));
+        }
+
         // Nearest schematic puzzle towers. Source: FindAllOf(BP_LevelObject_ItemPickupTower_C)
         // -- world-partition streamed, so FindAllOf returns only the nearby loaded ones (no
         // static location table exists). Nearest-cap + bounds cull mirror place_nearest_dungeons;
@@ -3676,13 +3776,20 @@ inline bool g_wp_on = false;
             {
                 return 0;
             }
+            refresh_schematic_done();
             std::vector<UObject*> objs;
             UObjectGlobals::FindAllOf(STR("BP_LevelObject_ItemPickupTower_C"), objs);
             std::vector<std::pair<double, double>> pts;
+            size_t done = 0;
             for (auto* o : objs)
             {
                 if (!o)
                 {
+                    continue;
+                }
+                if (g_schematic_hide_found && schematic_is_done(o))
+                {
+                    ++done;   // already looted: the layer is a "what's left" list
                     continue;
                 }
                 double wx = 0, wy = 0, wz = 0;
@@ -3720,7 +3827,9 @@ inline bool g_wp_on = false;
                     ++shown;
                 }
             }
-            Output::send<LogLevel::Default>(STR("[Lodestone] schematics: {} of {} nearby placed\n"), shown, total);
+            Output::send<LogLevel::Default>(
+                STR("[Lodestone] schematics: {} of {} nearby placed ({} solved hidden, flags={})\n"), shown, total,
+                done, m_schematic_done.size());
             return shown;
         }
 
@@ -3897,7 +4006,45 @@ inline bool g_wp_on = false;
             }
             else if (slot == 2)
             {
-                scan(kSchematicLayer, STR("BP_LevelObject_ItemPickupTower_C"));
+                // Same as scan(), but skips towers this player has already solved so the
+                // compass/minimap point at the nearest one still WORTH walking to.
+                if (!is_layer_on(kSchematicLayer))
+                {
+                    m_live_nearest[kSchematicLayer] = LiveNearest{};
+                }
+                else
+                {
+                    refresh_schematic_done();
+                    std::vector<UObject*> objs;
+                    UObjectGlobals::FindAllOf(STR("BP_LevelObject_ItemPickupTower_C"), objs);
+                    LiveNearest ln{};
+                    double best = 0.0;
+                    for (auto* o : objs)
+                    {
+                        if (!o || (g_schematic_hide_found && schematic_is_done(o)))
+                        {
+                            continue;
+                        }
+                        double wx = 0, wy = 0, wz = 0;
+                        if (!Engine::actor_location(o, wx, wy, wz) || (wx == 0.0 && wy == 0.0))
+                        {
+                            continue;
+                        }
+                        const double d2 = (wx - px) * (wx - px) + (wy - py) * (wy - py);
+                        if (!ln.valid || d2 < best)
+                        {
+                            ln.valid = true;
+                            best = d2;
+                            ln.wx = wx;
+                            ln.wy = wy;
+                        }
+                    }
+                    if (ln.valid)
+                    {
+                        ln.dist = std::sqrt(best);
+                    }
+                    m_live_nearest[kSchematicLayer] = ln;
+                }
             }
             else
             {
