@@ -8599,6 +8599,20 @@ inline bool g_wp_on = false;
                 Output::send<LogLevel::Default>(
                     STR("[Lodestone] minimap dots: placed={} pool={} icons_ready={} rotate={} effR={:.0f}uu zoom={:.2f} half={:.0f}\n"),
                     cursor, m_minimap_dots.size(), icons ? 1 : 0, rotate ? 1 : 0, eff_range, m_auto_zoom, half);
+                // Per-dot brush state. The leftover WHITE BLOCKS survived every terrain-capture
+                // change (blacklist, whitelist, source swap), which means they are not in the
+                // capture at all -- and their count matched `placed` exactly. So they are most
+                // likely OUR dots drawn with an Image brush whose texture never resolved: a
+                // white-tinted Image + no texture paints a blank white square, which is also
+                // exactly what "the icons disappeared" looks like. Name each dot's icon and say
+                // whether layer_texture() hands back a texture, so one relaunch settles it.
+                for (size_t i = 0; i < cursor && i < 8; ++i)
+                {
+                    const wchar_t* ic = m_minimap_dot_icon[i];
+                    Output::send<LogLevel::Default>(
+                        STR("[Lodestone]   dot[{}] icon={} tex={}\n"), i, ic ? ic : STR("(none/colour-dot)"),
+                        (ic && layer_texture(ic)) ? 1 : 0);
+                }
             }
             for (size_t i = cursor; i < m_minimap_dots.size(); ++i)
             {
