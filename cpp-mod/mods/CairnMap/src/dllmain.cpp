@@ -7915,9 +7915,25 @@ inline bool g_wp_on = false;
                     }
                 }
             }
-            else
+            else if (m_capture_clean_idx == 2)
             {
                 UObjectGlobals::FindAllOf(STR("MaterialBillboardComponent"), found);
+                what = L"matbillboards";
+                for (auto* c : found)
+                {
+                    if (c)
+                    {
+                        Engine::ParamsHideComponent p{c};
+                        Engine::call(m_terrain_comp, L"HideComponent", p);
+                    }
+                }
+            }
+            else
+            {
+                // Plain UBillboardComponent (not just the Material variant): the POI-marker
+                // world sprites the SceneCapture actually renders are billboard primitives.
+                // FindAllOf is exact-class per the census work, so sweep this base name too.
+                UObjectGlobals::FindAllOf(STR("BillboardComponent"), found);
                 what = L"billboards";
                 for (auto* c : found)
                 {
@@ -7928,7 +7944,7 @@ inline bool g_wp_on = false;
                     }
                 }
             }
-            m_capture_clean_idx = (m_capture_clean_idx + 1) % 3;
+            m_capture_clean_idx = (m_capture_clean_idx + 1) % 4;
             static int logn = 0;
             if (logn < 12)
             {
@@ -8249,6 +8265,13 @@ inline bool g_wp_on = false;
                 // Rotate the capture with the player so the ground lines up with the
                 // spun dot field; fixed north in north-up mode.
                 tick_terrain(px, py, pz, rotate ? yaw : 0.0);
+                // Strip the world's in-world POI billboards / floating icons / pals out
+                // of the CAPTURE (round-robin, self-throttled) so the minimap shows clean
+                // terrain instead of black/white boxes. In BaseColor (source 7) mode those
+                // vanilla POI sprites render as flat dark/light squares -- Kenny: "the
+                // icons disappeared" was actually these boxes crowding out our own dots.
+                // Our layer dots draw ON TOP; the capture should be terrain only.
+                clean_terrain_capture();
             }
             else if (m_terrain_actor)
             {
