@@ -71,6 +71,14 @@ namespace CairnMap
     // loads a save on its own is a bug to everyone except us.
     inline std::wstring g_autoload_world;
 
+    // Debug=1 in settings.txt turns the periodic diagnostics back on: the compass /
+    // minimap / live-scan status lines, the per-map-open player probe, the overlay
+    // leak counter and the F4 spawner census. Off by default -- together they were
+    // over half of UE4SS.log in a normal session, and some cost a full object-array
+    // walk just to print a number. One-per-event lines (built, placed, calibrated)
+    // and every warning stay on regardless.
+    inline bool g_debug = false;
+
 // Native minimap (#26), replacing the ore compass: an always-on HUD widget we
 // build ourselves, so there is no game widget to fight for icon placement (the
 // compass's fatal problem). This is the SPIKE gate -- it draws only the frame
@@ -1898,6 +1906,10 @@ inline bool g_wp_on = false;
                 case L'R': g_minimap_ax = 1.0; break;
                 }
             }
+            if (auto it = raw.find(L"Debug"); it != raw.end())
+            {
+                g_debug = (it->second == L"1");
+            }
             // Dev autoload. Read from `raw` (not `saved`) because the value is a save
             // directory name, not a flag -- `saved` would reduce "AF5D9C15..." to
             // whether it happens to contain a '1'.
@@ -1947,6 +1959,11 @@ inline bool g_wp_on = false;
                 f << L"# Delete this line to get the normal title menu back.\n";
                 f << L"AutoLoadWorld=" << g_autoload_world << L"\n";
             }
+            f << L"#\n";
+            f << L"# Debug = 1 writes periodic status lines to UE4SS.log (compass, minimap,\n";
+            f << L"# live scans, player position on map open) and enables the F4 spawner\n";
+            f << L"# census. Leave 0 unless you are chasing a bug. Restart to apply.\n";
+            f << L"Debug=" << (g_debug ? 1 : 0) << L"\n";
             f << L"#\n";
             f << L"# Always-on minimap on the HUD (1 = on). Shows your on-layers as dots\n";
             f << L"# around you, north-up, ~300 m radius. Toggle in-game with F8.\n";
@@ -2494,9 +2511,14 @@ inline bool g_wp_on = false;
                 register_keydown_event(Input::Key::F7, no_mods,
                                        [this]() { m_compass_toggle_req.store(true); });  // compass strip
                 // F4: one-shot census of the spawner DataTables (Pal species + NPC
-                // placements). Dev instrument -- logs to UE4SS.log, draws nothing.
-                register_keydown_event(Input::Key::F4, no_mods,
-                                       [this]() { m_census_req.store(true); });
+                // placements). Dev instrument -- logs to UE4SS.log, draws nothing, so the
+                // key is only bound with Debug=1 (settings are already loaded: see
+                // seed_layer_defaults above).
+                if (g_debug)
+                {
+                    register_keydown_event(Input::Key::F4, no_mods,
+                                           [this]() { m_census_req.store(true); });
+                }
                 // F5: toggle the config popup while the world map is open. Input thread --
                 // only touch the atomic; the game thread acts on it (see tick_map).
                 register_keydown_event(Input::Key::F5, no_mods,
@@ -3812,14 +3834,19 @@ inline bool g_wp_on = false;
                         m_lucky_in_range = false;
                     }
                 }
-                // One summary per full cycle (on the lucky slot) so the refresh is visible w/o spam.
-                auto dm = [this](int l) {
-                    auto it = m_live_nearest.find(l);
-                    return (it != m_live_nearest.end() && it->second.valid) ? it->second.dist / 100.0 : -1.0;
-                };
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] live nearest (no map): egg={:.0f}m dungeon={:.0f}m schematic={:.0f}m lucky={:.0f}m\n"),
-                    dm(kEggLayer), dm(kDungeonLayer), dm(kSchematicLayer), dm(kLuckyLayer));
+                // One summary per full cycle (on the lucky slot), Debug-only: at the default
+                // CompassLiveSec that is a line every ~8 s for the whole session.
+                if (g_debug)
+                {
+                    auto dm = [this](int l) {
+                        auto it = m_live_nearest.find(l);
+                        return (it != m_live_nearest.end() && it->second.valid) ? it->second.dist / 100.0 : -1.0;
+                    };
+                    Output::send<LogLevel::Default>(
+                        STR("[Lodestone] live nearest (no map): egg={:.0f}m dungeon={:.0f}m schematic={:.0f}m "
+                            "lucky={:.0f}m\n"),
+                        dm(kEggLayer), dm(kDungeonLayer), dm(kSchematicLayer), dm(kLuckyLayer));
+                }
             }
         }
 
@@ -4485,6 +4512,9 @@ inline bool g_wp_on = false;
         // any formula for it is a guess. Reading the player's real world position
         // turns that guess into a measurement, and doubles as the groundwork for the
         // nearest-readout and compass work.
+        //
+        // The log lines are Debug-only; the nearest recompute and the panel refresh
+        // below are not -- they are what keeps the distance column current on a reopen.
         auto log_player_context() -> void
         {
             double px = 0, py = 0, pz = 0;
@@ -4493,29 +4523,32 @@ inline bool g_wp_on = false;
                 Output::send<LogLevel::Warning>(STR("[Lodestone] player probe: no player position\n"));
                 return;
             }
-            Output::send<LogLevel::Default>(STR("[Lodestone] player at world ({:.0f}, {:.0f}, {:.0f})\n"), px, py,
-                                            pz);
             compute_nearest(px, py);
-            // Log the closest few, closest layer first: whatever you are standing on
-            // should be at the top with a small distance. This is the panel readout's
-            // own check -- if a row disagrees with this line, the panel is wrong.
-            // Do NOT name this `near`: <Windows.h> still defines near/far as empty
-            // macros (the 16-bit segment keywords), so `near.emplace_back(...)`
-            // silently becomes `.emplace_back(...)` and MSVC blames std::sort.
-            // Same family as the NOMINMAX trap.
-            std::vector<std::pair<double, int>> closest;
-            closest.reserve(m_nearest.size());
-            for (const auto& [id, n] : m_nearest)
+            if (g_debug)
             {
-                closest.emplace_back(n.dist_uu, id);
-            }
-            std::sort(closest.begin(), closest.end(),
-                      [](const auto& a, const auto& b) { return a.first < b.first; });
-            for (size_t i = 0; i < closest.size() && i < 6; ++i)
-            {
-                Output::send<LogLevel::Default>(STR("[Lodestone]   nearest {:<12} {:>9.0f}u {}\n"),
-                                                layer_key(closest[i].second), closest[i].first,
-                                                compass_8(m_nearest[closest[i].second].bearing_deg));
+                Output::send<LogLevel::Default>(STR("[Lodestone] player at world ({:.0f}, {:.0f}, {:.0f})\n"), px,
+                                                py, pz);
+                // Log the closest few, closest layer first: whatever you are standing on
+                // should be at the top with a small distance. This is the panel readout's
+                // own check -- if a row disagrees with this line, the panel is wrong.
+                // Do NOT name this `near`: <Windows.h> still defines near/far as empty
+                // macros (the 16-bit segment keywords), so `near.emplace_back(...)`
+                // silently becomes `.emplace_back(...)` and MSVC blames std::sort.
+                // Same family as the NOMINMAX trap.
+                std::vector<std::pair<double, int>> closest;
+                closest.reserve(m_nearest.size());
+                for (const auto& [id, n] : m_nearest)
+                {
+                    closest.emplace_back(n.dist_uu, id);
+                }
+                std::sort(closest.begin(), closest.end(),
+                          [](const auto& a, const auto& b) { return a.first < b.first; });
+                for (size_t i = 0; i < closest.size() && i < 6; ++i)
+                {
+                    Output::send<LogLevel::Default>(STR("[Lodestone]   nearest {:<12} {:>9.0f}u {}\n"),
+                                                    layer_key(closest[i].second), closest[i].first,
+                                                    compass_8(m_nearest[closest[i].second].bearing_deg));
+                }
             }
             // On a reopen the panel already exists and is not rebuilt, so nothing else
             // would push the new numbers into it. (On the first open the rows do not
@@ -4806,8 +4839,8 @@ inline bool g_wp_on = false;
             // effigies & notes, filtered by the live collected set
             std::unordered_set<std::wstring> collected;
             const bool have_flags = Collected::gather(collected);
-            // one-shot diagnostic: reveals the obtain-flag key format vs our GUIDs
-            if (!m_flag_probe_done)
+            // one-shot diagnostic (Debug=1): reveals the obtain-flag key format vs our GUIDs
+            if (g_debug && !m_flag_probe_done)
             {
                 m_flag_probe_done = true;
                 std::wstring samples;
@@ -4979,6 +5012,8 @@ inline bool g_wp_on = false;
             // children), so it always read 0 and could neither confirm nor deny the leak.
             // Total stays small if ensure_layer_canvas keeps sweeping reused bodies; an
             // unbounded climb across opens is the leak (two overlays paint -> "2 where 1").
+            // Debug-only: the count costs a full object-array walk on every map open.
+            if (g_debug)
             {
                 std::vector<UObject*> canvases;
                 UObjectGlobals::FindAllOf(STR("CanvasPanel"), canvases);
@@ -7404,7 +7439,7 @@ inline bool g_wp_on = false;
                 // Report the worst build/tick cost each ~5 s window (string work lives
                 // here, outside the __try). First window is skipped (maxes not seeded).
                 const auto now = std::chrono::steady_clock::now();
-                if (g_minimap && now >= m_mm_next_log)
+                if (g_debug && g_minimap && now >= m_mm_next_log)
                 {
                     if (m_mm_next_log.time_since_epoch().count() != 0)
                     {
@@ -7756,7 +7791,7 @@ inline bool g_wp_on = false;
             // DIAG: is the vanishing a PLACEMENT problem (cursor==0) or a RENDER/visibility
             // one (cursor>0 but nothing on screen)? Log the placed count + the geometry so
             // one relaunch settles it.
-            if (now >= m_mm_dbg_at)
+            if (g_debug && now >= m_mm_dbg_at)
             {
                 m_mm_dbg_at = now + std::chrono::seconds(3);
                 Output::send<LogLevel::Default>(
@@ -7945,6 +7980,10 @@ inline bool g_wp_on = false;
             // Rate-limited "why is the strip empty" probe. The strip going silent
             // mid-session was the tick early-returning; this says which gate.
             auto dbg_gate = [this](const wchar_t* why) {
+                if (!g_debug)
+                {
+                    return;
+                }
                 const auto now = std::chrono::steady_clock::now();
                 if (now >= m_next_compass_dbg)
                 {
@@ -8072,6 +8111,9 @@ inline bool g_wp_on = false;
             };
             std::vector<Place> places;
             int enabled_seen = 0, arc_culled = 0;   // dev: why the strip is empty
+            // Build the per-marker debug text only on the frame that will print it --
+            // it used to be formatted for every marker every frame and thrown away.
+            const bool dbg_due = g_debug && now >= m_next_compass_dbg;
             std::wstring dbg;
             for (const auto& [layer_id, n] : m_nearest)
             {
@@ -8092,7 +8134,7 @@ inline bool g_wp_on = false;
                 {
                     rel += 360.0;
                 }
-                if (dbg.size() < 400)
+                if (dbg_due && dbg.size() < 400)
                 {
                     // wb0 = the marker's TRUE world compass bearing (0=N,90=E,180=S,270=W),
                     // unflipped, camera-independent. With yaw + rel below, naming one marker's
@@ -8110,7 +8152,7 @@ inline bool g_wp_on = false;
                 }
                 places.push_back({half + rel * kpx, n.dist_uu, n.icon, n.color, layer_id});
             }
-            if (now >= m_next_compass_dbg)
+            if (dbg_due)
             {
                 m_next_compass_dbg = now + std::chrono::milliseconds(3000);
                 Output::send<LogLevel::Default>(
