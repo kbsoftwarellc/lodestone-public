@@ -47,7 +47,12 @@ env:
   # the UE4SS import lib (export symbol names); the mod's ABI comes from UE4SS_SHA
   # (the source headers, UNCHANGED), so the shipped DLL stays binary-compatible with
   # the UE4SS players already run. A dropped symbol would fail the link, loudly.
-  ZDEV_SHA256: 5e0c3e29f276eac7ecb3887561083acdd1027fb088b9c2b66417cf3488469035
+  #
+  # Re-pinned again 2026-10-09: re-uploaded 2026-08-28 (5e0c3e29... -> f5d356d5...),
+  # matching the sha256 digest GitHub publishes for the asset. That upload is built
+  # from a NEWER UE4SS commit than UE4SS_SHA; same reasoning holds -- only its export
+  # names are used, and every symbol we reference is one the pinned headers declare.
+  ZDEV_SHA256: f5d356d5bd64dc18fded71d293831e79f2cd05e254b081d5d74f704452608677
 
   # Third-party header deps, pinned to commit SHAs rather than tags. Tags are
   # mutable refs; a SHA is the artifact.
