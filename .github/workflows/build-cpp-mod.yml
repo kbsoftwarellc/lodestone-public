@@ -56,19 +56,25 @@ env:
   IMGUICTE_SHA: 6d943aba9f7cef05da80b86dbb0253b63818f95c     # v1.2.0
   ZYDIS_SHA: a2278f1d254e492f6a6b39f6cb5d1f5d515659dc        # v4.1.1
 
-  # UEPseudo (RE-UE4SS deps/first/Unreal) is a PRIVATE submodule, so CI cannot
-  # fetch it from source. Upstream substitutes a public vendored copy carried
-  # inside HorseMod, cloned at HEAD -- an unpinned, mutable input.
+  # UEPseudo (RE-UE4SS deps/first/Unreal) is a PRIVATE submodule: Re-UE4SS/UEPseudo
+  # is only readable by GitHub accounts linked to Epic Games. This build used to
+  # borrow a public copy vendored inside a third-party mod repo; that repo was
+  # deleted, which broke every build. A public copy can vanish, so we no longer
+  # depend on one.
   #
-  # We pin the SHA but deliberately do NOT vendor the tree into this repo:
-  # HorseMod is unlicensed, UEPseudo is private with no LICENSE or copyright
-  # banner anywhere in its tree, and the MIT LICENSE lives at the RE-UE4SS root
-  # of a flat-vendored copy. Copying headers of ambiguous provenance into this
-  # repository would turn a build-time reference into redistribution -- the exact
-  # thing NOTICE exists to avoid. Pinning fixes the security problem (mutable
-  # input) without taking on the licensing one.
-  UEPSEUDO_REPO: FottenSC/HorseMod
-  UEPSEUDO_SHA: e6313df89272949081e298aab1579aeaf2d5866a
+  # Instead the build reads a PRIVATE mirror through a read-only deploy key (the
+  # UEPSEUDO_DEPLOY_KEY secret, which can read that one repository and nothing
+  # else). The SHA is the exact commit UE4SS_SHA records for its deps/first/Unreal
+  # submodule -- the real headers for the shipped UE4SS, not a near miss.
+  #
+  # The tree is deliberately NOT vendored into this repository: it is Epic-licensed
+  # source with no LICENSE of its own, and copying it here would turn a build-time
+  # reference into redistribution -- the exact thing NOTICE exists to avoid.
+  #
+  # Building a fork: point UEPSEUDO_REPO at your own private mirror of
+  # Re-UE4SS/UEPseudo and add a read deploy key for it as UEPSEUDO_DEPLOY_KEY.
+  UEPSEUDO_REPO: kbsoftwarellc/uepseudo-mirror
+  UEPSEUDO_SHA: b2e876da82b17254c04304746341c8fde0ddb37c
 
 jobs:
   # The projection core is engine-free C++ and already has a test nobody runs.
@@ -105,6 +111,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Require the UEPseudo deploy key
+        shell: bash
+        env:
+          KEY: ${{ secrets.UEPSEUDO_DEPLOY_KEY }}
+        run: |
+          [ -n "$KEY" ] || {
+            echo "::error::UEPSEUDO_DEPLOY_KEY is not set. UE4SS's Unreal headers (UEPseudo) are private to Epic-linked GitHub accounts, so this build needs a read deploy key for a private mirror -- see UEPSEUDO_REPO in this workflow."
+            exit 1
+          }
+
+      # Must run BEFORE the next step, which sets a global insteadOf rewrite that
+      # would turn this SSH fetch into an unauthenticated HTTPS one.
+      - name: Fetch UEPseudo (private mirror, pinned SHA)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UEPSEUDO_REPO }}
+          ref: ${{ env.UEPSEUDO_SHA }}
+          ssh-key: ${{ secrets.UEPSEUDO_DEPLOY_KEY }}
+          path: third/UEPseudo
+          persist-credentials: false
+
       - name: Fetch UE4SS headers (public submodules only)
         shell: bash
         run: |
@@ -128,7 +155,9 @@ jobs:
           pin fmtlib/fmt                  "$FMT_SHA"      third/fmt
           pin ocornut/imgui               "$IMGUI_SHA"    third/imgui
           pin UE4SS-RE/ImGuiColorTextEdit "$IMGUICTE_SHA" third/ImGuiColorTextEdit
-          pin "$UEPSEUDO_REPO"            "$UEPSEUDO_SHA" third/HorseMod
+          echo "  third/UEPseudo @ $(git -C third/UEPseudo rev-parse HEAD)"
+          [ "$(git -C third/UEPseudo rev-parse HEAD)" = "$UEPSEUDO_SHA" ] || {
+            echo "::error::third/UEPseudo is not at the pinned UEPSEUDO_SHA"; exit 1; }
           git clone --quiet https://github.com/zyantific/zydis.git third/zydis
           git -C third/zydis checkout --quiet "$ZYDIS_SHA"
           git -C third/zydis submodule update --init --recursive --depth 1 --quiet
@@ -172,10 +201,10 @@ jobs:
           $inc += "/Ithird/fmt/include"
           $inc += "/Ithird/imgui"
           $inc += "/Ithird/ImGuiColorTextEdit"
-          $inc += "/Ithird/HorseMod/RE-UE4SS/deps/first/Unreal/include"
-          $inc += "/Ithird/HorseMod/RE-UE4SS/deps/first/Unreal/include/Unreal/Core"
-          $inc += "/Ithird/HorseMod/RE-UE4SS/deps/first/Unreal/include/Unreal"
-          $inc += "/Ithird/HorseMod/RE-UE4SS/deps/first/Unreal/generated_include"
+          $inc += "/Ithird/UEPseudo/include"
+          $inc += "/Ithird/UEPseudo/include/Unreal/Core"
+          $inc += "/Ithird/UEPseudo/include/Unreal"
+          $inc += "/Ithird/UEPseudo/generated_include"
           $inc += "/Ithird/zydis/include"
           $inc += "/Ithird/zydis/dependencies/zycore/include"
           mkdir out
