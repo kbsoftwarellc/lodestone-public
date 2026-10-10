@@ -79,6 +79,25 @@ namespace CairnMap
     // and every warning stay on regardless.
     inline bool g_debug = false;
 
+    // Records the longest run of a scope into `slot` (a long long, or an atomic one
+    // when the scope runs off the game thread). Feeds the 5-minute cost summary.
+    template <typename Slot>
+    struct PerfMax
+    {
+        Slot& slot;
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        ~PerfMax()
+        {
+            const long long us =
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
+                    .count();
+            if (us > slot)
+            {
+                slot = us;
+            }
+        }
+    };
+
 // Native minimap (#26), replacing the ore compass: an always-on HUD widget we
 // build ourselves, so there is no game widget to fight for icon placement (the
 // compass's fatal problem). This is the SPIKE gate -- it draws only the frame
@@ -1571,6 +1590,16 @@ inline bool g_wp_on = false;
         double m_auto_zoom = 1.0;   // smoothed range multiplier (>= 1)
         // Perf instrument: max build_minimap / tick_minimap cost over a ~5 s window.
         long long m_mm_build_max = 0, m_mm_tick_max = 0;
+        // Cost summary: the worst single call of each kind in a 5-minute window, logged
+        // as ONE line (always on). A hitch is a worst case, not an average, so these are
+        // maxima. Frame/live/HUD run on the game thread; the map tick and its find_map
+        // run on UE4SS's update thread, hence atomic.
+        long long m_perf_frame_max_us = 0;   // whole per-frame HUD driver
+        long long m_perf_live_max_us = 0;    // one live-actor scan (refresh_live_nearest)
+        long long m_perf_hud_max_us = 0;     // one HUD-root walk (hud_root)
+        std::atomic<long long> m_perf_tick_max_us{0};       // whole 300 ms map tick
+        std::atomic<long long> m_perf_find_map_max_us{0};   // its find_map alone
+        std::chrono::steady_clock::time_point m_perf_next_log{};
         std::chrono::steady_clock::time_point m_mm_next_log{};
         std::chrono::steady_clock::time_point m_mm_dbg_at{};   // throttle for the dot-count diag
         // Cached player controller for the minimap -- resolving it is a ~20 ms object-
@@ -3734,6 +3763,8 @@ inline bool g_wp_on = false;
             m_next_live_scan =
                 now + std::chrono::milliseconds(std::max<long long>(200, static_cast<long long>(
                                                                              g_compass_live_sec * 1000.0 / 3.0)));
+            // From here on this call does real work (a player lookup, then one scan).
+            PerfMax<long long> perf{m_perf_live_max_us};
             double px = 0, py = 0, pz = 0;
             if (!player_pos(px, py, pz))
             {
@@ -4836,9 +4867,13 @@ inline bool g_wp_on = false;
                     }
                 }
             }
+            // Phase stamps for the breakdown in the "dots placed" line below: where a slow
+            // map open actually spends its time (dot creation vs object scans vs paint).
+            const auto t_static = std::chrono::steady_clock::now();
             // effigies & notes, filtered by the live collected set
             std::unordered_set<std::wstring> collected;
             const bool have_flags = Collected::gather(collected);
+            const auto t_flags = std::chrono::steady_clock::now();
             // one-shot diagnostic (Debug=1): reveals the obtain-flag key format vs our GUIDs
             if (g_debug && !m_flag_probe_done)
             {
@@ -4963,6 +4998,7 @@ inline bool g_wp_on = false;
             // (eggs get picked up, towers get unlocked). Mark the boundary so a map reopen
             // re-runs only this tail via refresh_live_layers, not the whole dense pool.
             m_live_begin = m_emit_cursor;
+            const auto t_collect = std::chrono::steady_clock::now();
             // live eggs: no static positions (random lottery placement + respawn),
             // so enumerate the PalEgg loot actors currently loaded around the player
             // and place a dot at each. Only covers the streamed-in area near you; the
@@ -4975,6 +5011,7 @@ inline bool g_wp_on = false;
             placed += place_nearest_dungeons(image_class);   // nearest cave entrances (Build 1.7)
             placed += place_nearest_schematics(image_class);   // nearest schematic puzzle towers
             placed += place_nearest_lucky(image_class);   // nearest lucky/rare wild Pal (Build B)
+            const auto t_live = std::chrono::steady_clock::now();
             // collapse any leftover pooled dots beyond this pass
             for (size_t i = m_emit_cursor; i < m_dots.size(); ++i)
             {
@@ -4998,11 +5035,16 @@ inline bool g_wp_on = false;
                 (g_icons_enabled && m_icons_ready.load(std::memory_order_acquire))
                     ? paint_pass(SIZE_MAX, true, m_icon_scan_vis)
                     : 0;
-            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - t0).count();
+            const auto t_end = std::chrono::steady_clock::now();
+            const auto span_ms = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+                return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
+            };
             Output::send<LogLevel::Default>(
-                STR("[Lodestone] {} dots placed, {} collected hidden (pool {}), {} icons painted inline in {}ms\n"),
-                placed, hidden, m_dots.size(), pre_painted, ms);
+                STR("[Lodestone] {} dots placed, {} collected hidden (pool {}), {} icons painted inline in {}ms "
+                    "(static {} + flags {} + collectables {} + live scans {} + paint {})\n"),
+                placed, hidden, m_dots.size(), pre_painted, span_ms(t0, t_end), span_ms(t0, t_static),
+                span_ms(t_static, t_flags), span_ms(t_flags, t_collect), span_ms(t_collect, t_live),
+                span_ms(t_live, t_end));
             m_placed = true;
             m_collapsed = false;
 
@@ -6709,7 +6751,10 @@ inline bool g_wp_on = false;
                 return m_hud_root;
             }
             m_next_hud_walk = now + std::chrono::milliseconds(5000);
-            m_hud_root = find_player_hud();
+            {
+                PerfMax<long long> perf{m_perf_hud_max_us};
+                m_hud_root = find_player_hud();
+            }
             m_hud_root_idx = m_hud_root ? m_hud_root->GetInternalIndex() : -1;
             return m_hud_root;
         }
@@ -7379,6 +7424,7 @@ inline bool g_wp_on = false;
         {
             __try
             {
+                const auto f0 = std::chrono::steady_clock::now();
                 handle_minimap_input();
                 // Live nearest scan for the actor layers (eggs/dungeons/lucky) + lucky range
                 // alert. Self-throttled round-robin (one FindAllOf per fire), ungated by the
@@ -7411,6 +7457,11 @@ inline bool g_wp_on = false;
                 if (tus > m_mm_tick_max)
                 {
                     m_mm_tick_max = tus;
+                }
+                const long long fus = std::chrono::duration_cast<std::chrono::microseconds>(t2 - f0).count();
+                if (fus > m_perf_frame_max_us)
+                {
+                    m_perf_frame_max_us = fus;
                 }
                 // Heartbeat: stamp ONLY after the whole body completes cleanly. If any call
                 // above AV'd (server world teardown), the __except skips this and
@@ -7450,6 +7501,24 @@ inline bool g_wp_on = false;
                     m_mm_next_log = now + std::chrono::seconds(5);
                     m_mm_build_max = 0;
                     m_mm_tick_max = 0;
+                }
+                // Cost summary, one line per 5 minutes. First window is skipped: it
+                // spans the title screen and world load, which are not play.
+                if (now >= m_perf_next_log)
+                {
+                    const long long tick_us = m_perf_tick_max_us.exchange(0);
+                    const long long find_us = m_perf_find_map_max_us.exchange(0);
+                    if (m_perf_next_log.time_since_epoch().count() != 0)
+                    {
+                        Output::send<LogLevel::Default>(
+                            STR("[Lodestone] cost, worst single call in 5 min: HUD frame {}us (live scan {}us, HUD "
+                                "walk {}us); map tick {}us (find_map {}us)\n"),
+                            m_perf_frame_max_us, m_perf_live_max_us, m_perf_hud_max_us, tick_us, find_us);
+                    }
+                    m_perf_next_log = now + std::chrono::seconds(300);
+                    m_perf_frame_max_us = 0;
+                    m_perf_live_max_us = 0;
+                    m_perf_hud_max_us = 0;
                 }
             }
             catch (...)
@@ -8314,6 +8383,7 @@ inline bool g_wp_on = false;
 
         auto tick() -> void
         {
+            PerfMax<std::atomic<long long>> perf{m_perf_tick_max_us};
             // Before find_map: the title screen has no map, so anything below the
             // early-out never runs there -- which is exactly where autoload lives.
             try_autoload();
@@ -8388,7 +8458,12 @@ inline bool g_wp_on = false;
             UObject* root = nullptr;
             UObject* map_body_canvas = nullptr;
             UObject* mask = nullptr;
-            if (!find_map(root, map_body_canvas, mask))
+            bool map_open = false;
+            {
+                PerfMax<std::atomic<long long>> perf{m_perf_find_map_max_us};
+                map_open = find_map(root, map_body_canvas, mask);
+            }
+            if (!map_open)
             {
                 // map closed: collapse our overlay once (widgets stay pooled)
                 if (m_layer_canvas && !m_collapsed)
