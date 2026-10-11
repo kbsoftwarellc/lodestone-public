@@ -14,6 +14,7 @@
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -1271,7 +1272,10 @@ inline bool g_wp_on = false;
         // (Pal.hpp:32007), the same per-instance bool-array family as the relic/note flags,
         // keyed by each tower's LevelObjectInstanceId GUID. Lets the Schematic layer drop the
         // towers already looted, so the map shows only what is still out there.
-        inline auto gather_itempickup(std::unordered_set<std::wstring>& out) -> bool
+        //
+        // `ctx` is any live object in the player's world (the caller's cached controller).
+        // Without one, a controller is found the slow way: a full object-array walk.
+        inline auto gather_itempickup(std::unordered_set<std::wstring>& out, UObject* ctx = nullptr) -> bool
         {
             static Offsets off;
             if (!resolve(off))
@@ -1280,7 +1284,7 @@ inline bool g_wp_on = false;
             }
             auto* util_cdo =
                 UObjectGlobals::StaticFindObject(nullptr, nullptr, STR("/Script/Pal.Default__PalUtility"));
-            auto* world_ctx = UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
+            auto* world_ctx = ctx ? ctx : UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
             if (!util_cdo || !world_ctx)
             {
                 return false;
@@ -1665,8 +1669,32 @@ inline bool g_wp_on = false;
             bool valid = false;
         };
         std::unordered_map<int, LiveNearest> m_live_nearest;   // layer id -> nearest actor
-        int m_live_scan_idx = 0;                               // round-robin slot (egg/dungeon/lucky)
         std::chrono::steady_clock::time_point m_next_live_scan{};
+        // Live-actor candidates for refresh_live_nearest. The object-array walk that finds
+        // them (scan_live_candidates) runs on UE4SS's update thread; the game thread only
+        // reads the result. Each entry carries its object-array slot so the reader can
+        // prove the actor is still alive (slot_live) before touching it. Only vector
+        // moves and flag flips ever happen under m_live_mx -- never an engine call, so a
+        // fault swallowed by the SEH guards can never leave it locked.
+        struct LiveCand
+        {
+            UObject* obj;
+            int32_t idx;
+        };
+        enum LiveKind : int
+        {
+            kLiveEgg,
+            kLiveDungeon,
+            kLiveSchematic,
+            kLivePal,
+            kLiveKinds
+        };
+        std::mutex m_live_mx;
+        std::vector<LiveCand> m_live_cands[kLiveKinds];   // guarded by m_live_mx
+        bool m_live_cands_fresh[kLiveKinds]{};            // guarded by m_live_mx
+        int m_live_walk_idx = 0;                                    // update thread: round-robin kind
+        std::chrono::steady_clock::time_point m_next_live_walk{};   // update thread
+        std::atomic<bool> m_live_player_ok{false};   // game thread has a player; gates the walks
         bool m_lucky_in_range = false;   // lucky range-alert latch (fires once per approach)
         bool m_have_player = false;
         static constexpr double kDistCol = 62.0;      // px reserved for "1.2km SW"
@@ -3521,7 +3549,9 @@ inline bool g_wp_on = false;
         std::unordered_set<std::wstring> m_schematic_done;
         std::chrono::steady_clock::time_point m_next_schematic_flags{};
 
-        auto refresh_schematic_done() -> void
+        // `world_ctx`: a live player controller to ask through, when the caller already
+        // holds one. Without it the lookup walks the whole object array to find one.
+        auto refresh_schematic_done(UObject* world_ctx = nullptr) -> void
         {
             const auto now = std::chrono::steady_clock::now();
             if (now < m_next_schematic_flags)
@@ -3530,7 +3560,7 @@ inline bool g_wp_on = false;
             }
             m_next_schematic_flags = now + std::chrono::seconds(3);
             std::unordered_set<std::wstring> got;
-            if (Collected::gather_itempickup(got))
+            if (Collected::gather_itempickup(got, world_ctx))
             {
                 m_schematic_done = std::move(got);
             }
@@ -3628,6 +3658,13 @@ inline bool g_wp_on = false;
         {
             std::vector<UObject*> chars;
             UObjectGlobals::FindAllOf(STR("PalCharacter"), chars);
+            return nearest_lucky_among(chars, px, py, out_wx, out_wy, out_dist, rare, total);
+        }
+
+        // The rare filter + nearest pick over an already-gathered list of PalCharacters.
+        auto nearest_lucky_among(const std::vector<UObject*>& chars, double px, double py, double& out_wx,
+                                 double& out_wy, double& out_dist, int& rare, int& total) -> bool
+        {
             total = static_cast<int>(chars.size());
             rare = 0;
             bool have = false;
@@ -3708,13 +3745,11 @@ inline bool g_wp_on = false;
             return idx != SIZE_MAX ? 1 : 0;
         }
 
-        // Nearest actor of `class_name` to (px,py) in world units (plain FindAllOf, no filter).
-        // Shared by the egg + dungeon live scans; lucky uses find_nearest_lucky (rare filter).
-        auto nearest_actor(const wchar_t* class_name, double px, double py, double& out_wx,
+        // Nearest of `objs` to (px,py) in world units (no filter). Shared by the egg +
+        // dungeon live scans; lucky uses nearest_lucky_among (rare filter).
+        auto nearest_among(const std::vector<UObject*>& objs, double px, double py, double& out_wx,
                            double& out_wy, double& out_dist) -> bool
         {
-            std::vector<UObject*> objs;
-            UObjectGlobals::FindAllOf(class_name, objs);
             bool have = false;
             double best = 0.0;
             for (auto* o : objs)
@@ -3744,15 +3779,72 @@ inline bool g_wp_on = false;
             return have;
         }
 
-        // Refresh the compass's nearest-of-each for the ACTOR-based layers (eggs, dungeons, lucky)
-        // WITHOUT opening the map -- they spawn/despawn/stream as the player walks, so the map-open
-        // dot pool goes stale (Kenny: kept reopening the map every ~100m to spot new eggs). Static
-        // layers (effigies/ores/notes) already track live off the pool via compute_nearest, so they
-        // are not rescanned here. Round-robin: ONE FindAllOf per fire (they never stack in a frame),
-        // cycling egg -> dungeon -> lucky, so each layer refreshes every ~3 fires. Results land in
-        // m_live_nearest for the compass tick to inject after compute_nearest. Runs from the per-
-        // frame driver, ungated by the compass toggle so the lucky alert still fires. NOT the map --
-        // this touches only the small m_nearest set + the compass markers, never the map dot pool.
+        // The object-array walks behind refresh_live_nearest: one class per fire,
+        // round-robin, so each layer is re-walked every 4 fires. Runs on UE4SS's update
+        // thread (from tick_map, inside its SEH guard). Measured on a 20 min session a
+        // single walk costs 45-60 ms and climbs as the world streams in; with the player
+        // lookup on top, doing this on the game thread froze it 75-120 ms every 2 s.
+        // Only pointers and their object-array slots are gathered here -- no actor is
+        // called off the game thread, and the walk itself is the same one find_map has
+        // always done from this thread.
+        auto scan_live_candidates() -> void
+        {
+            if (!m_live_player_ok.load())
+            {
+                return;   // title screen / loading: nobody to find things for
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now < m_next_live_walk)
+            {
+                return;
+            }
+            m_next_live_walk =
+                now + std::chrono::milliseconds(std::max<long long>(200, static_cast<long long>(
+                                                                             g_compass_live_sec * 1000.0 / 3.0)));
+            struct Kind
+            {
+                int layer;
+                const wchar_t* cls;
+            };
+            static constexpr Kind kKinds[kLiveKinds] = {
+                {kEggLayer, L"PalMapObjectPalEgg"},
+                {kDungeonLayer, L"PalDungeonEntrance"},
+                {kSchematicLayer, L"BP_LevelObject_ItemPickupTower_C"},
+                {kLuckyLayer, L"PalCharacter"},
+            };
+            const int kind = m_live_walk_idx;
+            m_live_walk_idx = (m_live_walk_idx + 1) % kLiveKinds;
+            std::vector<LiveCand> found;
+            if (is_layer_on(kKinds[kind].layer))   // off: publish an empty list, no walk
+            {
+                std::vector<UObject*> objs;
+                UObjectGlobals::FindAllOf(kKinds[kind].cls, objs);
+                found.reserve(objs.size());
+                for (auto* o : objs)
+                {
+                    if (o)
+                    {
+                        found.push_back({o, o->GetInternalIndex()});
+                    }
+                }
+            }
+            std::lock_guard<std::mutex> lock(m_live_mx);
+            m_live_cands[kind] = std::move(found);
+            m_live_cands_fresh[kind] = true;
+        }
+
+        // Refresh the compass's nearest-of-each for the ACTOR-based layers (eggs, dungeons,
+        // schematics, lucky) WITHOUT opening the map -- they spawn/despawn/stream as the
+        // player walks, so the map-open dot pool goes stale (Kenny: kept reopening the map
+        // every ~100m to spot new eggs). Static layers (effigies/ores/notes) already track
+        // live off the pool via compute_nearest, so they are not rescanned here.
+        //
+        // This is the game-thread half: it never walks the object array. It picks up
+        // whatever scan_live_candidates published since last time, drops anything no
+        // longer alive, and measures the rest. Results land in m_live_nearest for the
+        // compass tick to inject after compute_nearest. Runs from the per-frame driver,
+        // ungated by the compass toggle so the lucky alert still fires. NOT the map --
+        // this touches only the small m_nearest set, never the map dot pool.
         auto refresh_live_nearest() -> void
         {
             const auto now = std::chrono::steady_clock::now();
@@ -3760,54 +3852,58 @@ inline bool g_wp_on = false;
             {
                 return;
             }
-            m_next_live_scan =
-                now + std::chrono::milliseconds(std::max<long long>(200, static_cast<long long>(
-                                                                             g_compass_live_sec * 1000.0 / 3.0)));
-            // From here on this call does real work (a player lookup, then one scan).
+            m_next_live_scan = now + std::chrono::milliseconds(500);
             PerfMax<long long> perf{m_perf_live_max_us};
-            double px = 0, py = 0, pz = 0;
-            if (!player_pos(px, py, pz))
+            double px = 0, py = 0, pz = 0, yaw = 0;
+            bool has_yaw = false;
+            if (!player_pose(px, py, pz, yaw, has_yaw))   // cached controller: no walk
             {
+                m_live_player_ok.store(false);
                 return;
             }
-            const int slot = m_live_scan_idx;
-            m_live_scan_idx = (m_live_scan_idx + 1) % 4;
-            auto scan = [&](int layer, const wchar_t* cls) {
+            m_live_player_ok.store(true);
+
+            static constexpr int kLayerOf[kLiveKinds] = {kEggLayer, kDungeonLayer, kSchematicLayer, kLuckyLayer};
+            for (int kind = 0; kind < kLiveKinds; ++kind)
+            {
+                std::vector<LiveCand> cands;
+                {
+                    std::lock_guard<std::mutex> lock(m_live_mx);
+                    if (!m_live_cands_fresh[kind])
+                    {
+                        continue;
+                    }
+                    m_live_cands_fresh[kind] = false;
+                    cands = m_live_cands[kind];
+                }
+                // Keep only actors still alive in the slot they were found in. The walk
+                // ran a moment ago on another thread; anything streamed out since is
+                // dropped here without ever being dereferenced.
+                std::vector<UObject*> objs;
+                objs.reserve(cands.size());
+                for (const auto& c : cands)
+                {
+                    if (slot_live(c.obj, c.idx))
+                    {
+                        objs.push_back(c.obj);
+                    }
+                }
+                const int layer = kLayerOf[kind];
+                LiveNearest ln{};
+                int rare = 0, total = 0;
                 if (!is_layer_on(layer))
                 {
-                    m_live_nearest[layer] = LiveNearest{};   // off: valid=false, injection erases it
-                    return;
+                    // leave ln invalid: the compass injection erases the layer
                 }
-                LiveNearest ln{};
-                ln.valid = nearest_actor(cls, px, py, ln.wx, ln.wy, ln.dist);
-                m_live_nearest[layer] = ln;
-            };
-            if (slot == 0)
-            {
-                scan(kEggLayer, STR("PalMapObjectPalEgg"));
-            }
-            else if (slot == 1)
-            {
-                scan(kDungeonLayer, STR("PalDungeonEntrance"));
-            }
-            else if (slot == 2)
-            {
-                // Same as scan(), but skips towers this player has already solved so the
-                // compass/minimap point at the nearest one still WORTH walking to.
-                if (!is_layer_on(kSchematicLayer))
+                else if (kind == kLiveSchematic)
                 {
-                    m_live_nearest[kSchematicLayer] = LiveNearest{};
-                }
-                else
-                {
-                    refresh_schematic_done();
-                    std::vector<UObject*> objs;
-                    UObjectGlobals::FindAllOf(STR("BP_LevelObject_ItemPickupTower_C"), objs);
-                    LiveNearest ln{};
+                    // Skips towers this player has already solved so the compass/minimap
+                    // point at the nearest one still WORTH walking to.
+                    refresh_schematic_done(m_mm_pc);
                     double best = 0.0;
                     for (auto* o : objs)
                     {
-                        if (!o || (g_schematic_hide_found && schematic_is_done(o)))
+                        if (g_schematic_hide_found && schematic_is_done(o))
                         {
                             continue;
                         }
@@ -3829,43 +3925,41 @@ inline bool g_wp_on = false;
                     {
                         ln.dist = std::sqrt(best);
                     }
-                    m_live_nearest[kSchematicLayer] = ln;
                 }
-            }
-            else
-            {
-                // Lucky: rare filter (find_nearest_lucky) + the range-alert latch.
-                if (!is_layer_on(kLuckyLayer))
+                else if (kind == kLivePal)
                 {
-                    m_live_nearest[kLuckyLayer] = LiveNearest{};
-                    m_lucky_in_range = false;
+                    ln.valid = nearest_lucky_among(objs, px, py, ln.wx, ln.wy, ln.dist, rare, total);
                 }
                 else
                 {
-                    LiveNearest ln{};
-                    int rare = 0, total = 0;
-                    ln.valid = find_nearest_lucky(px, py, ln.wx, ln.wy, ln.dist, rare, total);
-                    m_live_nearest[kLuckyLayer] = ln;
-                    const bool in_range = ln.valid && ln.dist < kLuckyRangeUU;
-                    const bool out_range = !ln.valid || ln.dist > kLuckyRangeUU + kLuckyHystUU;
-                    if (in_range && !m_lucky_in_range)
+                    ln.valid = nearest_among(objs, px, py, ln.wx, ln.wy, ln.dist);
+                }
+                m_live_nearest[layer] = ln;
+
+                if (kind != kLivePal)
+                {
+                    continue;
+                }
+                // Lucky: the range-alert latch (fires once per approach).
+                const bool in_range = ln.valid && ln.dist < kLuckyRangeUU;
+                const bool out_range = !ln.valid || ln.dist > kLuckyRangeUU + kLuckyHystUU;
+                if (in_range && !m_lucky_in_range)
+                {
+                    m_lucky_in_range = true;
+                    if (g_lucky_sound)
                     {
-                        m_lucky_in_range = true;
-                        if (g_lucky_sound)
-                        {
-                            // Interim: log only. A real in-engine cue (PlaySound2D) is Build C -- an OS
-                            // beep is a USER32 import (breaks compare_dll's allowlist) + unreliable on Proton.
-                            Output::send<LogLevel::Default>(
-                                STR("[Lodestone] LUCKY PAL in range! {:.0f}m ({} rare of {})\n"), ln.dist / 100.0,
-                                rare, total);
-                        }
-                    }
-                    else if (out_range)
-                    {
-                        m_lucky_in_range = false;
+                        // Interim: log only. A real in-engine cue (PlaySound2D) is Build C -- an OS
+                        // beep is a USER32 import (breaks compare_dll's allowlist) + unreliable on Proton.
+                        Output::send<LogLevel::Default>(
+                            STR("[Lodestone] LUCKY PAL in range! {:.0f}m ({} rare of {})\n"), ln.dist / 100.0, rare,
+                            total);
                     }
                 }
-                // One summary per full cycle (on the lucky slot), Debug-only: at the default
+                else if (out_range)
+                {
+                    m_lucky_in_range = false;
+                }
+                // One summary per full cycle (on the lucky kind), Debug-only: at the default
                 // CompassLiveSec that is a line every ~8 s for the whole session.
                 if (g_debug)
                 {
@@ -4714,6 +4808,7 @@ inline bool g_wp_on = false;
             drop_compass_caches();
             drop_minimap_caches();
             m_hud_root = nullptr;   // force hud_root() to re-walk for the fresh HUD
+            m_next_hud_walk = {};   // ...now, not when the once-a-minute re-confirm comes due
             m_hud_root_idx = -1;
         }
 
@@ -6743,19 +6838,27 @@ inline bool g_wp_on = false;
         // on it, which would deref freed memory. Gate the cached return on slot_live()
         // (pointer-safe: derefs the slot index, never the freed pointer); a dead cache
         // forces an immediate re-walk instead of a 5 s stale window.
+        //
+        // How often to walk: a root that just died is replaced at once. A live one is only
+        // re-confirmed once a minute -- in play it does not change (one build across 13
+        // map opens in a measured 20 min session), and every confirmation was a 40-55 ms
+        // walk on the game thread, every 5 s. With no HUD at all (title, loading) look
+        // again twice a second rather than on every call.
         auto hud_root() -> UObject*
         {
             const auto now = std::chrono::steady_clock::now();
-            if (m_hud_root && slot_live(m_hud_root, m_hud_root_idx) && now < m_next_hud_walk)
+            const bool cached_live = m_hud_root && slot_live(m_hud_root, m_hud_root_idx);
+            const bool just_died = m_hud_root && !cached_live;
+            if (!just_died && now < m_next_hud_walk)
             {
-                return m_hud_root;
+                return cached_live ? m_hud_root : nullptr;
             }
-            m_next_hud_walk = now + std::chrono::milliseconds(5000);
             {
                 PerfMax<long long> perf{m_perf_hud_max_us};
                 m_hud_root = find_player_hud();
             }
             m_hud_root_idx = m_hud_root ? m_hud_root->GetInternalIndex() : -1;
+            m_next_hud_walk = now + (m_hud_root ? std::chrono::milliseconds(60000) : std::chrono::milliseconds(500));
             return m_hud_root;
         }
 
@@ -8440,6 +8543,9 @@ inline bool g_wp_on = false;
             // m_last_frame_hook every frame, so a live hook keeps this branch out; a dead
             // one lets it in within ~1 s. Never m_minimap_fast (hook never installed) also
             // routes here.
+            // Gather live-actor candidates here, off the game thread, before anything
+            // below (including the fallback driver) wants to read them.
+            scan_live_candidates();
             const auto tnow = std::chrono::steady_clock::now();
             const bool hook_stalled =
                 !m_minimap_fast ||
