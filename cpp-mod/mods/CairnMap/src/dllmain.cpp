@@ -3858,6 +3858,9 @@ inline bool g_wp_on = false;
             bool has_yaw = false;
             if (!player_pose(px, py, pz, yaw, has_yaw))   // cached controller: no walk
             {
+                // No player (title, loading): player_pose has just walked the object
+                // array looking for one. Ask again at the old 2 s pace, not twice a second.
+                m_next_live_scan = now + std::chrono::milliseconds(2000);
                 m_live_player_ok.store(false);
                 return;
             }
