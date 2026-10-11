@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 #include <fstream>
 #include <functional>
 #include <unordered_map>
@@ -79,6 +80,16 @@ namespace CairnMap
     // walk just to print a number. One-per-event lines (built, placed, calibrated)
     // and every warning stay on regardless.
     inline bool g_debug = false;
+
+    // Catch layer: point at the nearest wild Pal of a species caught fewer than this many
+    // times (CatchBelow). 5 by request; the Paldeck's own bonus tiers are the usual reason
+    // to want a number here.
+    inline int g_catch_below = 5;
+
+    // How many EV stops brighter the minimap terrain is rendered at night
+    // (MinimapTerrainNightBoost). The terrain is a LIT capture, so it is exactly as dark
+    // as the night it photographs; one exposure value could not suit both night and noon.
+    inline double g_terrain_night_boost = 2.5;
 
     // Records the longest run of a scope into `slot` (a long long, or an atomic one
     // when the scope runs off the game thread). Feeds the 5-minute cost summary.
@@ -1098,16 +1109,17 @@ inline bool g_wp_on = false;
             bool resolved = false;
         };
 
-        inline auto resolve(Offsets& off) -> bool
+        // The record keeps its per-key values in replicated arrays of {Key, Value} items; the
+        // BoolVal and IntVal families differ only in the value type, so one resolver serves
+        // both, given the wrapper and item struct paths.
+        inline auto resolve(Offsets& off, const wchar_t* wrapper_path, const wchar_t* item_path) -> bool
         {
             if (off.resolved)
             {
                 return true;
             }
-            auto* wrapper_struct = UObjectGlobals::StaticFindObject<UStruct*>(
-                nullptr, nullptr, STR("/Script/Pal.PalPlayerRecordDataRepInfoArrayThreadSafe_BoolVal"));
-            auto* item_struct = UObjectGlobals::StaticFindObject<UStruct*>(
-                nullptr, nullptr, STR("/Script/Pal.PalPlayerRecordDataRepInfoThreadSafe_BoolVal"));
+            auto* wrapper_struct = UObjectGlobals::StaticFindObject<UStruct*>(nullptr, nullptr, wrapper_path);
+            auto* item_struct = UObjectGlobals::StaticFindObject<UStruct*>(nullptr, nullptr, item_path);
             if (!wrapper_struct || !item_struct)
             {
                 return false;
@@ -1135,8 +1147,16 @@ inline bool g_wp_on = false;
             return off.resolved;
         }
 
-        // union of all true-flag keys across the relic/note arrays
-        inline auto gather(std::unordered_set<std::wstring>& out) -> bool
+        inline auto resolve(Offsets& off) -> bool
+        {
+            return resolve(off, STR("/Script/Pal.PalPlayerRecordDataRepInfoArrayThreadSafe_BoolVal"),
+                           STR("/Script/Pal.PalPlayerRecordDataRepInfoThreadSafe_BoolVal"));
+        }
+
+        // union of all true-flag keys across the relic/note arrays.
+        // `ctx`: any live object in the player's world (a cached controller); without one
+        // a controller is found the slow way, by walking the whole object array.
+        inline auto gather(std::unordered_set<std::wstring>& out, UObject* ctx = nullptr) -> bool
         {
             static Offsets off;
             if (!resolve(off))
@@ -1145,7 +1165,7 @@ inline bool g_wp_on = false;
             }
             auto* util_cdo =
                 UObjectGlobals::StaticFindObject(nullptr, nullptr, STR("/Script/Pal.Default__PalUtility"));
-            auto* world_ctx = UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
+            auto* world_ctx = ctx ? ctx : UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
             if (!util_cdo || !world_ctx)
             {
                 return false;
@@ -1324,6 +1344,77 @@ inline bool g_wp_on = false;
             }
             return true;
         }
+
+        // Lower-cased species key for a CharacterID. An alpha in the wild is
+        // "BOSS_<Species>" (a predator "PREDATOR_<Species>") but is the same Paldeck entry,
+        // and the game is not consistent about letter case between tables.
+        inline auto species_key(std::wstring id) -> std::wstring
+        {
+            for (auto& ch : id)
+            {
+                ch = static_cast<wchar_t>(std::towlower(ch));
+            }
+            for (const wchar_t* prefix : {L"boss_", L"predator_"})
+            {
+                const size_t n = std::wcslen(prefix);
+                if (id.compare(0, n, prefix) == 0)
+                {
+                    id.erase(0, n);
+                }
+            }
+            return id;
+        }
+
+        // The LOCAL player's capture count per species: PalCaptureCount (Pal.hpp:31978), an
+        // IntVal array of the same replicated-record family as the flag arrays above, keyed
+        // by CharacterID. A species never caught has no entry at all. `ctx` is required --
+        // this is polled, so it must never fall back to an object-array walk.
+        inline auto gather_capture_counts(std::unordered_map<std::wstring, int32_t>& out, UObject* ctx) -> bool
+        {
+            static Offsets off;
+            if (!ctx || !resolve(off, STR("/Script/Pal.PalPlayerRecordDataRepInfoArrayThreadSafe_IntVal"),
+                                 STR("/Script/Pal.PalPlayerRecordDataRepInfoThreadSafe_IntVal")))
+            {
+                return false;
+            }
+            auto* util_cdo =
+                UObjectGlobals::StaticFindObject(nullptr, nullptr, STR("/Script/Pal.Default__PalUtility"));
+            if (!util_cdo)
+            {
+                return false;
+            }
+            struct
+            {
+                UObject* WorldContextObject{};
+                UObject* ReturnValue{};
+            } rec{ctx, nullptr};
+            if (!Engine::call(util_cdo, L"GetLocalRecordData", rec) || !rec.ReturnValue)
+            {
+                return false;
+            }
+            auto* wrapper = rec.ReturnValue->GetValuePtrByPropertyNameInChain<uint8_t>(STR("PalCaptureCount"));
+            if (!wrapper)
+            {
+                return false;
+            }
+            struct RawArray
+            {
+                uint8_t* data;
+                int32_t num;
+                int32_t max;
+            };
+            const auto* arr = reinterpret_cast<const RawArray*>(wrapper + off.items);
+            out.clear();
+            for (int32_t i = 0; i < arr->num; ++i)
+            {
+                const uint8_t* item = arr->data + static_cast<size_t>(i) * off.item_size;
+                const auto* key = reinterpret_cast<const FName*>(item + off.key);
+                // Keep the larger count if two spellings of one species both appear.
+                int32_t& slot = out[species_key(key->ToString())];
+                slot = std::max(slot, *reinterpret_cast<const int32_t*>(item + off.value));
+            }
+            return true;
+        }
     } // namespace Collected
 
     // ---------------------------------------------------------------- the mod
@@ -1383,15 +1474,24 @@ inline bool g_wp_on = false;
         static constexpr const wchar_t* kSchematicIcon = L"T_itemicon_Material_Blueprint";
         static constexpr Engine::FLinearColor_ kSchematicColor{0.35f, 0.80f, 1.0f, 1.0f};   // tech sky-blue
         static constexpr size_t kSchematicMaxDots = 20;
+        // "Catch" layer: the nearest wild Pal of a species the player has caught fewer than
+        // CatchBelow of (default 5). Live scan of the same PalCharacter list as Lucky,
+        // nearest-only, compass + minimap. Marked with a Pal Sphere -- the item art lives
+        // in the same pak folder as every other item icon here, so it cannot trip the
+        // all-or-nothing icon load.
+        static constexpr int kCatchLayer = 1011;
+        static constexpr const wchar_t* kCatchIcon = L"T_itemicon_PalSphere";
+        static constexpr Engine::FLinearColor_ kCatchColor{0.45f, 0.85f, 1.0f, 1.0f};
 
         static constexpr ExtraLayer kExtraLayers[] = {
             {kEffigyLayer, L"Effigies"},      {kNoteLayer, L"Notes"},   {kEggLayer, L"Eggs"},
             {kFastTravelLayer, L"FastTravel"}, {kTowerLayer, L"Tower"}, {kSealedLayer, L"SealedRealm"},
             {kPalSpeciesLayer, L"Pal"}, {kDungeonLayer, L"Dungeon"}, {kLuckyLayer, L"Lucky"},
-            {kWaypointLayer, L"Waypoint"}, {kSchematicLayer, L"Schematic"}};
+            {kWaypointLayer, L"Waypoint"}, {kSchematicLayer, L"Schematic"}, {kCatchLayer, L"Catch"}};
         // Dynamic panel label for the Pal layer ("Pal: <name>"); a member so its
         // c_str() outlives the panel build. Rebuilt in panel_items from g_track_pal.
         std::wstring m_pal_label = L"Pal";
+        std::wstring m_catch_label = L"Pals: under 5 caught";   // same, for the Catch row
         // In-game Pal picker (#40, redesigned 2026-07-19): pick ONE species to track,
         // by REAL localized name, from an A-Z letter-filtered list under the PALS
         // category. The trackable set is enumerated live from DT_PalWildSpawner (every
@@ -1543,6 +1643,13 @@ inline bool g_wp_on = false;
         std::vector<UObject*> m_minimap_dots;        // pooled layer dots on the minimap
         std::vector<UObject*> m_minimap_dot_slots;   // their canvas slots (for repositioning)
         std::vector<const wchar_t*> m_minimap_dot_icon;   // icon each pooled dot currently shows
+        std::vector<Engine::FLinearColor_> m_minimap_dot_col;   // ...and the tint it was given
+        // m_minimap_dot_icon value for a dot that has never been styled (see tick_minimap).
+        static constexpr const wchar_t* kUnstyledIcon = L"<unstyled>";
+        static auto same_color(const Engine::FLinearColor_& a, const Engine::FLinearColor_& b) -> bool
+        {
+            return a.R == b.R && a.G == b.G && a.B == b.B && a.A == b.A;
+        }
         std::chrono::steady_clock::time_point m_next_minimap{};
         // Set from keydown callbacks (input thread); consumed on the game thread in
         // tick(). Never mutate the g_minimap_* state off-thread -- just request.
@@ -1630,6 +1737,12 @@ inline bool g_wp_on = false;
             const wchar_t* cur_icon = nullptr;   // last art applied (skip re-brushing)
             std::wstring cur_text;               // last distance string (skip re-texting)
             bool cur_glyph = false;
+            // A fresh UImage paints as a plain WHITE SQUARE until it is given a brush.
+            // "No icon yet" and "this layer has no icon" are both cur_icon == nullptr, so
+            // without this flag an icon-less layer (lucky, waypoint) was never styled at
+            // all -- the white squares on the strip.
+            bool styled = false;
+            Engine::FLinearColor_ cur_color{};   // last tint applied
         };
         std::vector<CompassMarker> m_compass_markers;   // pooled, reused each rebuild
         // layer id -> its OWN marker index. A marker belongs to ONE layer for the HUD's
@@ -1695,6 +1808,29 @@ inline bool g_wp_on = false;
         int m_live_walk_idx = 0;                                    // update thread: round-robin kind
         std::chrono::steady_clock::time_point m_next_live_walk{};   // update thread
         std::atomic<bool> m_live_player_ok{false};   // game thread has a player; gates the walks
+        // The controller the game thread last validated, with its object-array slot, for
+        // the update thread to use as world context (published_pc checks the slot first).
+        // Two atomics, not one pair: a torn read just fails the slot check and is skipped.
+        std::atomic<UObject*> m_pc_pub{nullptr};
+        std::atomic<int32_t> m_pc_pub_idx{-1};
+        // Collected state while the map is closed (refresh_collected_closed, update thread).
+        size_t m_collected_seen = SIZE_MAX;   // obtained-key count last applied
+        std::chrono::steady_clock::time_point m_next_collected_poll{};
+        // Catch layer (game thread). Capture counts come off the local player record; "is
+        // this id a Pal at all" comes from the character database, remembered per id.
+        std::unordered_map<std::wstring, int32_t> m_capture_count;   // species key -> times caught
+        bool m_capture_ok = false;                                   // counts read at least once
+        std::chrono::steady_clock::time_point m_next_capture_read{};
+        std::unordered_map<std::wstring, bool> m_is_pal;             // CharacterID -> GetIsPal
+        std::wstring m_catch_species;                                // target last reported in the log
+        bool m_catch_reported = false;                               // first-scan filter report done
+        std::chrono::steady_clock::time_point m_next_catch_log{};
+        // Minimap terrain exposure, eased between its day and night values.
+        double m_terrain_ev = 0.0;           // bias currently being eased toward the target
+        double m_terrain_ev_applied = 0.0;   // bias last written to the capture
+        bool m_terrain_night = false;
+        std::chrono::steady_clock::time_point m_next_exposure_tick{};
+        std::chrono::steady_clock::time_point m_next_night_check{};
         bool m_lucky_in_range = false;   // lucky range-alert latch (fires once per approach)
         bool m_have_player = false;
         static constexpr double kDistCol = 62.0;      // px reserved for "1.2km SW"
@@ -1839,6 +1975,10 @@ inline bool g_wp_on = false;
             }
             num(L"MinimapTerrainExposure", g_terrain_exposure, -10.0, 10.0);
             num(L"MinimapTerrainBrightness", g_terrain_brightness, 0.05, 4.0);
+            num(L"MinimapTerrainNightBoost", g_terrain_night_boost, 0.0, 8.0);
+            double catch_below = g_catch_below;
+            num(L"CatchBelow", catch_below, 1.0, 99.0);
+            g_catch_below = static_cast<int>(catch_below);
             num(L"CompassX", g_compass_ox, 0.0, 4000.0);
             num(L"CompassY", g_compass_oy, 0.0, 4000.0);
             num(L"MenuButtonSize", g_menu_btn_size, 24.0, 96.0);
@@ -2062,6 +2202,11 @@ inline bool g_wp_on = false;
             f << L"# dark albedo). One value covers day AND night on BaseColor (7), which never\n";
             f << L"# changes with the sun. Applied as a colour multiply on the RT image.\n";
             f << L"MinimapTerrainBrightness=" << g_terrain_brightness << L"\n";
+            f << L"# MinimapTerrainNightBoost = extra exposure at night, in EV stops, added on\n";
+            f << L"# top of MinimapTerrainExposure (2.5 = about 5.7x brighter; 0 = off). Fades\n";
+            f << L"# in and out at dusk and dawn. If days look too bright, lower\n";
+            f << L"# MinimapTerrainExposure -- it no longer has to cover the night as well.\n";
+            f << L"MinimapTerrainNightBoost=" << g_terrain_night_boost << L"\n";
             f << L"# Rotate the map with you (1, player faces up) vs north-up (0). F6 toggles.\n";
             f << L"MinimapRotate=" << (g_minimap_rotate ? 1 : 0) << L"\n";
             f << L"#\n";
@@ -2110,6 +2255,11 @@ inline bool g_wp_on = false;
             f << L"# to apply (an in-game picker is coming).\n";
             f << L"TrackPal=" << g_track_pal << L"\n";
             f << L"TrackRelic=" << g_track_relic << L"\n";
+            f << L"#\n";
+            f << L"# Catch layer ('Pals: under N caught'): the compass and minimap point at the\n";
+            f << L"# nearest wild Pal of a species you have caught fewer than CatchBelow of.\n";
+            f << L"# Restart to apply.\n";
+            f << L"CatchBelow=" << g_catch_below << L"\n";
             f << L"#\n";
             f << L"# Waypoint (F3): a sticky 'go here' target on the compass. On=1 when set;\n";
             f << L"# X/Y are its world coordinates. F3 sets it to the nearest marker, or clears it.\n";
@@ -2365,6 +2515,8 @@ inline bool g_wp_on = false;
                 v.push_back({PanelItem::Row, L"Dungeons", kDungeonLayer, kDungeonIcon, 0.35f, 0.85f, 0.75f});
                 v.push_back({PanelItem::Row, L"Schematics", kSchematicLayer, kSchematicIcon, 0.35f, 0.80f, 1.0f});
                 v.push_back({PanelItem::Row, L"Lucky Pals", kLuckyLayer, nullptr, 1.0f, 0.84f, 0.20f});
+                m_catch_label = L"Pals: under " + std::to_wstring(g_catch_below) + L" caught";
+                v.push_back({PanelItem::Row, m_catch_label.c_str(), kCatchLayer, kCatchIcon, 0.45f, 0.85f, 1.0f});
             }
             else if (m_active_tab == 1)   // EFFIGIES tab: on/off summary + a type radio
             {
@@ -3304,6 +3456,7 @@ inline bool g_wp_on = false;
             resolve_one(kSealedIcon);
             resolve_one(kDungeonIcon);
             resolve_one(kSchematicIcon);
+            resolve_one(kCatchIcon);
             resolve_one(L"T_icon_map_player");   // minimap heading arrow
 
             if (resolved == want)
@@ -3712,6 +3865,193 @@ inline bool g_wp_on = false;
             return have;
         }
 
+        // Re-read the per-species capture counts at most every 5 s. Needs a live controller
+        // to ask through; without one the previous counts stand.
+        auto refresh_capture_counts(UObject* ctx) -> void
+        {
+            const auto now = std::chrono::steady_clock::now();
+            if (!ctx || now < m_next_capture_read)
+            {
+                return;
+            }
+            m_next_capture_read = now + std::chrono::seconds(5);
+            std::unordered_map<std::wstring, int32_t> got;
+            if (Collected::gather_capture_counts(got, ctx))
+            {
+                m_capture_count = std::move(got);
+                m_capture_ok = true;
+            }
+        }
+
+        // Is this CharacterID a Pal, as opposed to a human NPC or a player? Asked of the
+        // game's own character database once per id, then remembered. An answer that could
+        // not be obtained is NOT remembered, so it is asked again next scan.
+        auto is_pal_id(UObject* ctx, const FName& id, const std::wstring& id_str) -> bool
+        {
+            if (auto it = m_is_pal.find(id_str); it != m_is_pal.end())
+            {
+                return it->second;
+            }
+            auto* util =
+                UObjectGlobals::StaticFindObject(nullptr, nullptr, STR("/Script/Pal.Default__PalUtility"));
+            struct
+            {
+                UObject* WorldContextObject{};
+                UObject* ReturnValue{};
+            } db{ctx, nullptr};
+            if (!util || !ctx || !Engine::call(util, L"GetDatabaseCharacterParameter", db) || !db.ReturnValue)
+            {
+                return false;
+            }
+            struct
+            {
+                FName RowName{FName()};   // 0x00
+                bool ReturnValue{};       // 0x08
+            } q{};
+            q.RowName = id;
+            if (!Engine::call(db.ReturnValue, L"GetIsPal", q))
+            {
+                return false;
+            }
+            m_is_pal.emplace(id_str, q.ReturnValue);
+            return q.ReturnValue;
+        }
+
+        // Where CharacterID and OwnerPlayerUId sit inside FPalIndividualCharacterSaveParameter,
+        // read off the struct's own reflection data rather than hardcoded. Unresolved (-1)
+        // leaves the Catch layer empty rather than guessing who owns what.
+        struct SaveParamOffsets
+        {
+            int32_t character_id = -1;
+            int32_t owner_uid = -1;
+            bool looked_up = false;
+        };
+        static auto save_param_offsets() -> const SaveParamOffsets&
+        {
+            static SaveParamOffsets off;
+            if (!off.looked_up)
+            {
+                off.looked_up = true;
+                if (auto* s = UObjectGlobals::StaticFindObject<UStruct*>(
+                        nullptr, nullptr, STR("/Script/Pal.PalIndividualCharacterSaveParameter")))
+                {
+                    for (FProperty* prop : s->ForEachProperty())
+                    {
+                        if (prop->GetName() == STR("CharacterID"))
+                        {
+                            off.character_id = prop->GetOffset_Internal();
+                        }
+                        else if (prop->GetName() == STR("OwnerPlayerUId"))
+                        {
+                            off.owner_uid = prop->GetOffset_Internal();
+                        }
+                    }
+                }
+            }
+            return off;
+        }
+
+        // The Catch layer's pick: the nearest WILD Pal whose species the player has caught
+        // fewer than CatchBelow times. Same actor list as the lucky scan. Skipped: anything
+        // with an owner (party, base workers, other players' Pals), non-Pals (humans, the
+        // players themselves), and Pals the game marks uncapturable or dead.
+        auto nearest_uncaught_among(const std::vector<UObject*>& chars, UObject* ctx, double px, double py,
+                                    double& out_wx, double& out_wy, double& out_dist, std::wstring& out_species,
+                                    int32_t& out_count) -> bool
+        {
+            const SaveParamOffsets& off = save_param_offsets();
+            if (!m_capture_ok || off.owner_uid < 0 || off.character_id < 0)
+            {
+                return false;   // no counts yet: pointing at every Pal would be worse than nothing
+            }
+            bool have = false;
+            double best_d2 = 0.0;
+            int owned = 0, not_pal = 0, enough = 0, wanted = 0;   // for the one-shot report below
+            for (auto* c : chars)
+            {
+                if (!c)
+                {
+                    continue;
+                }
+                auto** comp = c->GetValuePtrByPropertyNameInChain<UObject*>(STR("CharacterParameterComponent"));
+                if (!comp || !*comp)
+                {
+                    continue;
+                }
+                auto** indiv = (*comp)->GetValuePtrByPropertyNameInChain<UObject*>(STR("IndividualParameter"));
+                if (!indiv || !*indiv)
+                {
+                    continue;
+                }
+                const auto* save = (*indiv)->GetValuePtrByPropertyNameInChain<uint8_t>(STR("SaveParameter"));
+                if (!save)
+                {
+                    continue;
+                }
+                const auto* owner = reinterpret_cast<const uint32_t*>(save + off.owner_uid);
+                if ((owner[0] | owner[1] | owner[2] | owner[3]) != 0)
+                {
+                    ++owned;
+                    continue;   // owned: not something to go and catch
+                }
+                const FName id = *reinterpret_cast<const FName*>(save + off.character_id);
+                const std::wstring id_str = id.ToString();
+                if (!is_pal_id(ctx, id, id_str))
+                {
+                    ++not_pal;
+                    continue;
+                }
+                const auto cit = m_capture_count.find(Collected::species_key(id_str));
+                const int32_t count = cit == m_capture_count.end() ? 0 : cit->second;
+                if (count >= g_catch_below)
+                {
+                    ++enough;
+                    continue;
+                }
+                ++wanted;
+                Engine::ParamsIsRarePal uncapturable{};   // same shape: no args, bool return
+                if (Engine::call(*indiv, L"IsUncapturable", uncapturable) && uncapturable.ReturnValue)
+                {
+                    continue;
+                }
+                Engine::ParamsIsRarePal dead{};
+                if (Engine::call(*indiv, L"IsDead", dead) && dead.ReturnValue)
+                {
+                    continue;
+                }
+                double wx = 0, wy = 0, wz = 0;
+                if (!Engine::actor_location(c, wx, wy, wz) || (wx == 0.0 && wy == 0.0))
+                {
+                    continue;
+                }
+                const double d2 = (wx - px) * (wx - px) + (wy - py) * (wy - py);
+                if (!have || d2 < best_d2)
+                {
+                    have = true;
+                    best_d2 = d2;
+                    out_wx = wx;
+                    out_wy = wy;
+                    out_species = id_str;
+                    out_count = count;
+                }
+            }
+            // One line the first time there is something to say, so a build nobody has
+            // watched yet shows whether each filter is doing its job.
+            if (!m_catch_reported && !chars.empty())
+            {
+                m_catch_reported = true;
+                Output::send<LogLevel::Default>(
+                    STR("[Lodestone] catch: first scan saw {} characters: {} owned, {} not Pals, {} already at "
+                        "{}+ caught, {} still wanted; capture counts known for {} species\n"),
+                    chars.size(), owned, not_pal, enough, g_catch_below, wanted, m_capture_count.size());
+            }
+            if (have)
+            {
+                out_dist = std::sqrt(best_d2);
+            }
+            return have;
+        }
+
         // Map dot for the nearest lucky Pal (called from place_dots / refresh_live_layers).
         // Nearest-only. Logs the rare/total probe so a "0 rare of N" server result is visible.
         auto place_nearest_lucky(UClass* image_class) -> size_t
@@ -3815,7 +4155,11 @@ inline bool g_wp_on = false;
             const int kind = m_live_walk_idx;
             m_live_walk_idx = (m_live_walk_idx + 1) % kLiveKinds;
             std::vector<LiveCand> found;
-            if (is_layer_on(kKinds[kind].layer))   // off: publish an empty list, no walk
+            // The Pal walk feeds two layers (Lucky and Catch). All layers off: publish an
+            // empty list without walking.
+            const bool wanted =
+                is_layer_on(kKinds[kind].layer) || (kind == kLivePal && is_layer_on(kCatchLayer));
+            if (wanted)
             {
                 std::vector<UObject*> objs;
                 UObjectGlobals::FindAllOf(kKinds[kind].cls, objs);
@@ -3942,6 +4286,29 @@ inline bool g_wp_on = false;
                 if (kind != kLivePal)
                 {
                     continue;
+                }
+                // Catch: the same Pal list, filtered to wild Pals of a species the player
+                // still has fewer than CatchBelow of.
+                {
+                    LiveNearest cn{};
+                    if (is_layer_on(kCatchLayer))
+                    {
+                        refresh_capture_counts(m_mm_pc);
+                        std::wstring species;
+                        int32_t count = 0;
+                        cn.valid = nearest_uncaught_among(objs, m_mm_pc, px, py, cn.wx, cn.wy, cn.dist, species, count);
+                        // Say which one, when the target changes -- the compass shows a
+                        // sphere and a distance, not a name. At most one line per 15 s.
+                        if (cn.valid && species != m_catch_species && now >= m_next_catch_log)
+                        {
+                            m_catch_species = species;
+                            m_next_catch_log = now + std::chrono::seconds(15);
+                            Output::send<LogLevel::Default>(
+                                STR("[Lodestone] catch: nearest is {} ({} caught, want {}), {:.0f}m\n"), species,
+                                count, g_catch_below, cn.dist / 100.0);
+                        }
+                    }
+                    m_live_nearest[kCatchLayer] = cn;
                 }
                 // Lucky: the range-alert latch (fires once per approach).
                 const bool in_range = ln.valid && ln.dist < kLuckyRangeUU;
@@ -4813,6 +5180,18 @@ inline bool g_wp_on = false;
             m_hud_root = nullptr;   // force hud_root() to re-walk for the fresh HUD
             m_next_hud_walk = {};   // ...now, not when the once-a-minute re-confirm comes due
             m_hud_root_idx = -1;
+            m_pc_pub.store(nullptr);   // the update thread must not borrow a controller we just lost
+            m_pc_pub_idx.store(-1);
+        }
+
+        // A player controller the update thread may use as world context: the one the game
+        // thread last validated, provided it is still alive in its object-array slot. Never
+        // walks; returns null when there is nothing safe to hand out.
+        auto published_pc() -> UObject*
+        {
+            UObject* pc = m_pc_pub.load();
+            const int32_t idx = m_pc_pub_idx.load();
+            return slot_live(pc, idx) ? pc : nullptr;
         }
 
         // Position AND facing for the per-frame minimap, with NO object-array walk in
@@ -4879,6 +5258,9 @@ inline bool g_wp_on = false;
             {
                 return false;
             }
+            // Controller and pawn both answered: publish it for the update thread.
+            m_pc_pub_idx.store(pc->GetInternalIndex());
+            m_pc_pub.store(pc);
             // Heading = where the player is LOOKING (the controller's view yaw), NOT
             // where the pawn faces. In third-person the pawn lags the camera, so the
             // pawn's K2_GetActorRotation read as "the map doesn't respond to the camera"
@@ -5421,6 +5803,59 @@ inline bool g_wp_on = false;
                                                     shown, m_dots.size(),
                                                     on.empty() ? std::wstring(L"(none)") : on);
                 }
+            }
+        }
+
+        // Collected state while the map is CLOSED. The compass and minimap read each
+        // collectable's base_hidden flag out of the dot pool, and that flag was only ever
+        // refreshed when the map was (re)opened -- so a just-collected effigy stayed on the
+        // compass until the map was opened and closed again. Poll the obtained set every
+        // 2 s instead and update the flags; no widget is touched (the overlay is collapsed,
+        // and the reopen path re-applies visibility anyway).
+        //
+        // Runs on the update thread, which owns the pool. It asks through the controller
+        // the game thread published and never walks the object array to find one.
+        auto refresh_collected_closed() -> void
+        {
+            if (m_guid_dots.empty())
+            {
+                return;   // pool not built yet: needs the map opened once
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now < m_next_collected_poll)
+            {
+                return;
+            }
+            m_next_collected_poll = now + std::chrono::seconds(2);
+            UObject* ctx = published_pc();
+            if (!ctx)
+            {
+                return;
+            }
+            std::unordered_set<std::wstring> collected;
+            if (!Collected::gather(collected, ctx) || collected.size() == m_collected_seen)
+            {
+                return;   // unreadable, or nothing picked up since last look
+            }
+            const bool first = m_collected_seen == SIZE_MAX;
+            m_collected_seen = collected.size();
+            size_t hidden = 0;
+            for (const auto& gd : m_guid_dots)
+            {
+                if (gd.dot_index >= m_dots.size())
+                {
+                    continue;
+                }
+                const bool is_collected = collected.contains(gd.key);
+                hidden += is_collected ? 1 : 0;
+                m_dots[gd.dot_index].base_hidden = is_collected;
+            }
+            recompute_found(collected, true);   // found/total badges
+            if (!first)
+            {
+                Output::send<LogLevel::Default>(
+                    STR("[Lodestone] collected changed with the map closed: {} of {} collectables now hidden\n"),
+                    hidden, m_guid_dots.size());
             }
         }
 
@@ -6784,6 +7219,7 @@ inline bool g_wp_on = false;
             m_minimap_dots.clear();
             m_minimap_dot_slots.clear();
             m_minimap_dot_icon.clear();
+            m_minimap_dot_col.clear();
             m_terrain_tried = false;
             m_terrain_actor = nullptr;
             m_terrain_comp = nullptr;
@@ -7306,6 +7742,12 @@ inline bool g_wp_on = false;
                 {
                     pp[0x0009] |= 0x20;   // bOverride_AutoExposureBias
                     *reinterpret_cast<float*>(pp + 0x047C) = static_cast<float>(g_terrain_exposure);
+                    // Start from the day value; update_terrain_exposure eases in the night
+                    // boost from here if it turns out to be night.
+                    m_terrain_ev = g_terrain_exposure;
+                    m_terrain_ev_applied = g_terrain_exposure;
+                    m_terrain_night = false;
+                    m_next_night_check = {};
                     Output::send<LogLevel::Default>(
                         STR("[Lodestone] terrain exposure: method={} (default) bias={:.2f}\n"),
                         static_cast<int>(pp[0x002A]), *reinterpret_cast<float*>(pp + 0x047C));
@@ -7388,6 +7830,62 @@ inline bool g_wp_on = false;
         // scale, bounds cull, terrain OrthoWidth) reads this, not the raw base.
         auto effective_range_uu() const -> double { return g_minimap_range_uu * m_auto_zoom; }
 
+        // Day/night exposure for the terrain capture. The capture is lit, so it is as dark
+        // as the night it photographs: one exposure bias tuned to make nights readable blew
+        // out the days, and one tuned for the days left nights black. Ask the game whether
+        // it is night (every 5 s) and ease the bias between MinimapTerrainExposure and that
+        // plus MinimapTerrainNightBoost, so dusk and dawn fade rather than snap. The write
+        // is one float in the capture's post-process settings, and only when it has moved.
+        auto update_terrain_exposure() -> void
+        {
+            if (!m_terrain_comp)
+            {
+                return;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now < m_next_exposure_tick)
+            {
+                return;
+            }
+            m_next_exposure_tick = now + std::chrono::milliseconds(250);
+            if (now >= m_next_night_check && m_mm_pc)
+            {
+                m_next_night_check = now + std::chrono::seconds(5);
+                auto* util =
+                    UObjectGlobals::StaticFindObject(nullptr, nullptr, STR("/Script/Pal.Default__PalUtility"));
+                struct
+                {
+                    UObject* WorldContextObject{};   // 0x00
+                    bool ReturnValue{};              // 0x08
+                } q{m_mm_pc, false};
+                if (util && Engine::call(util, L"IsNight", q) && q.ReturnValue != m_terrain_night)
+                {
+                    m_terrain_night = q.ReturnValue;
+                    Output::send<LogLevel::Default>(
+                        STR("[Lodestone] terrain exposure: {} -> bias {:.1f} EV\n"),
+                        m_terrain_night ? STR("night") : STR("day"),
+                        g_terrain_exposure + (m_terrain_night ? g_terrain_night_boost : 0.0));
+                }
+            }
+            const double target = g_terrain_exposure + (m_terrain_night ? g_terrain_night_boost : 0.0);
+            m_terrain_ev += (target - m_terrain_ev) * 0.06;   // ~4 s to settle at 4 steps/s
+            if (std::abs(target - m_terrain_ev) < 0.01)
+            {
+                m_terrain_ev = target;
+            }
+            // Write when it has moved a visible amount, or to land exactly on the target.
+            const bool landing = m_terrain_ev == target && m_terrain_ev_applied != target;
+            if (std::abs(m_terrain_ev - m_terrain_ev_applied) < 0.02 && !landing)
+            {
+                return;
+            }
+            if (auto* pp = m_terrain_comp->GetValuePtrByPropertyNameInChain<uint8_t>(STR("PostProcessSettings")))
+            {
+                *reinterpret_cast<float*>(pp + 0x047C) = static_cast<float>(m_terrain_ev);   // AutoExposureBias
+                m_terrain_ev_applied = m_terrain_ev;
+            }
+        }
+
         auto tick_terrain(double px, double py, double pz, double cam_yaw) -> void
         {
             if (!m_terrain_actor)
@@ -7415,6 +7913,7 @@ inline bool g_wp_on = false;
                 } noargs;
                 Engine::call(m_terrain_comp, L"CaptureScene", noargs);
             }
+            update_terrain_exposure();
             // One-shot: confirm the actor really points down (pitch ~ -90) a few frames in.
             if (m_terrain_rot_log < 3)
             {
@@ -7861,13 +8360,17 @@ inline bool g_wp_on = false;
                     Engine::call(a.ReturnValue, L"SetAlignment", al);
                     m_minimap_dots.push_back(d);
                     m_minimap_dot_slots.push_back(a.ReturnValue);
-                    m_minimap_dot_icon.push_back(nullptr);
+                    // Not nullptr: that means "styled as a plain dot". A fresh UImage
+                    // paints as a white square until styled, and an icon-less layer
+                    // (lucky) asks for nullptr -- which used to match and skip the styling.
+                    m_minimap_dot_icon.push_back(kUnstyledIcon);
+                    m_minimap_dot_col.push_back(Engine::FLinearColor_{});
                 }
                 UObject* dot = m_minimap_dots[cursor];
                 // Only touch the brush when this pooled slot changes what it shows:
                 // pooled dots are reused across layers each update but rarely change,
                 // and SetBrushFromTexture per dot per tick would be the expensive part.
-                if (m_minimap_dot_icon[cursor] != icon)
+                if (m_minimap_dot_icon[cursor] != icon || !same_color(m_minimap_dot_col[cursor], col))
                 {
                     UObject* tex = (icons && icon) ? layer_texture(icon) : nullptr;
                     if (tex)
@@ -7890,11 +8393,16 @@ inline bool g_wp_on = false;
                     }
                     else
                     {
-                        Style::make_round(dot);   // icons not ready yet: plain coloured dot
+                        // Plain coloured dot (no icon for this layer, or icons not ready
+                        // yet). Drop any texture a previous use left on the brush first.
+                        Engine::ParamsSetBrushResourceObject none{nullptr};
+                        Engine::call(dot, L"SetBrushResourceObject", none);
+                        Style::make_round(dot, kMinimapDotPx / 2.0);
                         Engine::ParamsSetColorAndOpacity c{col};
                         Engine::call(dot, L"SetColorAndOpacity", c);
                     }
                     m_minimap_dot_icon[cursor] = tex ? icon : nullptr;
+                    m_minimap_dot_col[cursor] = col;
                 }
                 Engine::ParamsSetOffsets o{sx, sy, static_cast<float>(kMinimapDotPx),
                                            static_cast<float>(kMinimapDotPx)};
@@ -7959,10 +8467,12 @@ inline bool g_wp_on = false;
                     place(static_cast<double>(it->second.wx), static_cast<double>(it->second.wy), icon, color);
                 }
             };
-            place_live(kEggLayer, nullptr, Engine::FLinearColor_{1.0f, 0.82f, 0.15f, 1.0f});
+            // Eggs carry the egg item art, same as on the big map, so they read as eggs.
+            place_live(kEggLayer, Data::kEggIcon, Engine::FLinearColor_{1.0f, 0.82f, 0.15f, 1.0f});
             place_live(kDungeonLayer, kDungeonIcon, kDungeonColor);
             place_live(kSchematicLayer, kSchematicIcon, kSchematicColor);
             place_live(kLuckyLayer, nullptr, kLuckyColor);
+            place_live(kCatchLayer, kCatchIcon, kCatchColor);
             // DIAG: is the vanishing a PLACEMENT problem (cursor==0) or a RENDER/visibility
             // one (cursor>0 but nothing on screen)? Log the placed count + the geometry so
             // one relaunch settles it.
@@ -8203,10 +8713,11 @@ inline bool g_wp_on = false;
                     Engine::FLinearColor_ color;
                 };
                 static const LiveMeta kLiveMeta[] = {
-                    {kEggLayer, nullptr, {1.0f, 0.82f, 0.15f, 1.0f}},
+                    {kEggLayer, Data::kEggIcon, {1.0f, 0.82f, 0.15f, 1.0f}},
                     {kDungeonLayer, kDungeonIcon, kDungeonColor},
                     {kSchematicLayer, kSchematicIcon, kSchematicColor},
                     {kLuckyLayer, nullptr, kLuckyColor},
+                    {kCatchLayer, kCatchIcon, kCatchColor},
                 };
                 for (const auto& lm : kLiveMeta)
                 {
@@ -8406,7 +8917,7 @@ inline bool g_wp_on = false;
                 // Art: item icon (white tint) / a glyph tinted with the layer colour /
                 // a plain coloured dot until icons load. Only re-brush on a change.
                 const bool glyph = p.icon && Style::icon_is_glyph(p.icon);
-                if (m.cur_icon != p.icon || m.cur_glyph != glyph)
+                if (!m.styled || m.cur_icon != p.icon || m.cur_glyph != glyph || !same_color(m.cur_color, p.color))
                 {
                     UObject* tex = (icons && p.icon) ? layer_texture(p.icon) : nullptr;
                     if (tex)
@@ -8420,12 +8931,18 @@ inline bool g_wp_on = false;
                     }
                     else
                     {
+                        // Plain coloured dot. Drop any texture a previous use left on the
+                        // brush first, or the rounded box would be filled with it.
+                        Engine::ParamsSetBrushResourceObject none{nullptr};
+                        Engine::call(m.icon, L"SetBrushResourceObject", none);
                         Style::make_round(m.icon, isz / 2.0);
                         Engine::ParamsSetColorAndOpacity c{p.color};
                         Engine::call(m.icon, L"SetColorAndOpacity", c);
                     }
                     m.cur_icon = tex ? p.icon : nullptr;
                     m.cur_glyph = glyph;
+                    m.cur_color = p.color;
+                    m.styled = true;
                 }
                 Engine::ParamsSetOffsets io{static_cast<float>(p.x), -7.0f, static_cast<float>(isz),
                                             static_cast<float>(isz)};
@@ -8582,6 +9099,7 @@ inline bool g_wp_on = false;
                     m_collapsed = true;
                 }
                 m_menu_toggle_req.store(false);   // map closed: an F5 press is a no-op, not queued
+                refresh_collected_closed();       // an effigy picked up just now leaves the compass
                 return;
             }
 
