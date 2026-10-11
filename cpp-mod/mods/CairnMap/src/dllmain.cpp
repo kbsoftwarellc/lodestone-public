@@ -1708,6 +1708,10 @@ inline bool g_wp_on = false;
         long long m_perf_frame_max_us = 0;   // whole per-frame HUD driver
         long long m_perf_live_max_us = 0;    // one live-actor scan (refresh_live_nearest)
         long long m_perf_hud_max_us = 0;     // one HUD-root walk (hud_root)
+        int m_perf_hud_n = 0;                // ...and how many there were
+        long long m_perf_pc_max_us = 0;      // one walk to re-find the player controller
+        int m_perf_pc_n = 0;                 // ...and how many there were
+        int m_perf_live_kinds = 0;           // which live kinds the worst live scan handled (bit per kind)
         std::atomic<long long> m_perf_tick_max_us{0};       // whole 300 ms map tick
         std::atomic<long long> m_perf_find_map_max_us{0};   // its find_map alone
         std::chrono::steady_clock::time_point m_perf_next_log{};
@@ -1824,6 +1828,7 @@ inline bool g_wp_on = false;
         std::unordered_map<std::wstring, bool> m_is_pal;             // CharacterID -> GetIsPal
         std::wstring m_catch_species;                                // target last reported in the log
         bool m_catch_reported = false;                               // first-scan filter report done
+        UObject* m_local_pawn = nullptr;   // the player's own character, so trackers can skip it
         std::chrono::steady_clock::time_point m_next_catch_log{};
         // Minimap terrain exposure, eased between its day and night values.
         double m_terrain_ev = 0.0;           // bias currently being eased toward the target
@@ -3843,6 +3848,12 @@ inline bool g_wp_on = false;
                 {
                     continue;   // player / NPC / normal pal
                 }
+                // Wild only. The player's own lucky Pal -- in the party, 0 m away -- used
+                // to win "nearest" every time and fire the range alert the moment it loaded.
+                if (!is_wild(*indiv))
+                {
+                    continue;
+                }
                 ++rare;
                 double wx = 0, wy = 0, wz = 0;
                 if (!Engine::actor_location(c, wx, wy, wz) || (wx == 0.0 && wy == 0.0))
@@ -3951,6 +3962,32 @@ inline bool g_wp_on = false;
             return off;
         }
 
+        // Wild = nobody owns it and it is not assigned to a base. If the save-parameter
+        // layout could not be resolved the owner test is skipped, which is the old behaviour.
+        static auto is_wild(UObject* indiv) -> bool
+        {
+            const SaveParamOffsets& off = save_param_offsets();
+            if (off.owner_uid >= 0)
+            {
+                if (const auto* save = indiv->GetValuePtrByPropertyNameInChain<uint8_t>(STR("SaveParameter")))
+                {
+                    const auto* owner = reinterpret_cast<const uint32_t*>(save + off.owner_uid);
+                    if ((owner[0] | owner[1] | owner[2] | owner[3]) != 0)
+                    {
+                        return false;
+                    }
+                }
+            }
+            if (const auto* camp = indiv->GetValuePtrByPropertyNameInChain<uint32_t>(STR("BaseCampId")))
+            {
+                if ((camp[0] | camp[1] | camp[2] | camp[3]) != 0)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         // The Catch layer's pick: the nearest WILD Pal whose species the player has caught
         // fewer than CatchBelow times. Same actor list as the lucky scan. Skipped: anything
         // with an owner (party, base workers, other players' Pals), non-Pals (humans, the
@@ -3983,20 +4020,26 @@ inline bool g_wp_on = false;
                 {
                     continue;
                 }
+                if (c == m_local_pawn)
+                {
+                    continue;   // the player
+                }
                 const auto* save = (*indiv)->GetValuePtrByPropertyNameInChain<uint8_t>(STR("SaveParameter"));
                 if (!save)
                 {
                     continue;
                 }
-                const auto* owner = reinterpret_cast<const uint32_t*>(save + off.owner_uid);
-                if ((owner[0] | owner[1] | owner[2] | owner[3]) != 0)
+                if (!is_wild(*indiv))
                 {
                     ++owned;
-                    continue;   // owned: not something to go and catch
+                    continue;   // owned or working at a base: not something to go and catch
                 }
                 const FName id = *reinterpret_cast<const FName*>(save + off.character_id);
                 const std::wstring id_str = id.ToString();
-                if (!is_pal_id(ctx, id, id_str))
+                // "None" is what a player character reports here -- and the database calls
+                // it a Pal, so it has to be named. Seen live: the tracker pointed at the
+                // player, 0 m away, whenever nothing else qualified.
+                if (id_str == L"None" || !is_pal_id(ctx, id, id_str))
                 {
                     ++not_pal;
                     continue;
@@ -4197,7 +4240,25 @@ inline bool g_wp_on = false;
                 return;
             }
             m_next_live_scan = now + std::chrono::milliseconds(500);
-            PerfMax<long long> perf{m_perf_live_max_us};
+            // Times this call and, if it is the slowest so far, remembers which kinds it
+            // handled -- so the cost line can say which layer a slow scan belonged to.
+            struct LiveScope
+            {
+                Mod& mod;
+                std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+                int kinds = 0;
+                ~LiveScope()
+                {
+                    const long long us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                             std::chrono::steady_clock::now() - t0)
+                                             .count();
+                    if (us > mod.m_perf_live_max_us)
+                    {
+                        mod.m_perf_live_max_us = us;
+                        mod.m_perf_live_kinds = kinds;
+                    }
+                }
+            } perf{*this};
             double px = 0, py = 0, pz = 0, yaw = 0;
             bool has_yaw = false;
             if (!player_pose(px, py, pz, yaw, has_yaw))   // cached controller: no walk
@@ -4223,6 +4284,7 @@ inline bool g_wp_on = false;
                     m_live_cands_fresh[kind] = false;
                     cands = m_live_cands[kind];
                 }
+                perf.kinds |= 1 << kind;
                 // Keep only actors still alive in the slot they were found in. The walk
                 // ran a moment ago on another thread; anything streamed out since is
                 // dropped here without ever being dereferenced.
@@ -5182,6 +5244,7 @@ inline bool g_wp_on = false;
             m_hud_root_idx = -1;
             m_pc_pub.store(nullptr);   // the update thread must not borrow a controller we just lost
             m_pc_pub_idx.store(-1);
+            m_local_pawn = nullptr;
         }
 
         // A player controller the update thread may use as world context: the one the game
@@ -5236,7 +5299,12 @@ inline bool g_wp_on = false;
                 }
                 if (!pc)
                 {
-                    pc = player_controller();   // FindFirstOf fallback (a walk -- one-time on cache miss)
+                    // FindFirstOf fallback: a full object-array walk, meant to happen once
+                    // per cache miss. Counted, because a cache that keeps missing would
+                    // put this walk back on the game thread.
+                    PerfMax<long long> perf{m_perf_pc_max_us};
+                    ++m_perf_pc_n;
+                    pc = player_controller();
                 }
                 m_mm_pc = pc;
                 if (pc && !m_mm_pc_logged)
@@ -5261,6 +5329,7 @@ inline bool g_wp_on = false;
             // Controller and pawn both answered: publish it for the update thread.
             m_pc_pub_idx.store(pc->GetInternalIndex());
             m_pc_pub.store(pc);
+            m_local_pawn = gp.ReturnValue;   // only ever compared, never dereferenced
             // Heading = where the player is LOOKING (the controller's view yaw), NOT
             // where the pawn faces. In third-person the pawn lags the camera, so the
             // pawn's K2_GetActorRotation read as "the map doesn't respond to the camera"
@@ -7294,6 +7363,7 @@ inline bool g_wp_on = false;
             }
             {
                 PerfMax<long long> perf{m_perf_hud_max_us};
+                ++m_perf_hud_n;
                 m_hud_root = find_player_hud();
             }
             m_hud_root_idx = m_hud_root ? m_hud_root->GetInternalIndex() : -1;
@@ -8115,15 +8185,23 @@ inline bool g_wp_on = false;
                     const long long find_us = m_perf_find_map_max_us.exchange(0);
                     if (m_perf_next_log.time_since_epoch().count() != 0)
                     {
+                        // "x N" = how many times that walk ran in the window; "kinds" = which
+                        // live kinds the worst live scan handled (1 egg, 2 dungeon, 4 schematic,
+                        // 8 Pals), so a slow one can be pinned on a layer.
                         Output::send<LogLevel::Default>(
-                            STR("[Lodestone] cost, worst single call in 5 min: HUD frame {}us (live scan {}us, HUD "
-                                "walk {}us); map tick {}us (find_map {}us)\n"),
-                            m_perf_frame_max_us, m_perf_live_max_us, m_perf_hud_max_us, tick_us, find_us);
+                            STR("[Lodestone] cost, worst single call in 5 min: HUD frame {}us (live scan {}us kinds "
+                                "{}, HUD walk {}us x{}, player lookup {}us x{}); map tick {}us (find_map {}us)\n"),
+                            m_perf_frame_max_us, m_perf_live_max_us, m_perf_live_kinds, m_perf_hud_max_us,
+                            m_perf_hud_n, m_perf_pc_max_us, m_perf_pc_n, tick_us, find_us);
                     }
                     m_perf_next_log = now + std::chrono::seconds(300);
                     m_perf_frame_max_us = 0;
                     m_perf_live_max_us = 0;
+                    m_perf_live_kinds = 0;
                     m_perf_hud_max_us = 0;
+                    m_perf_hud_n = 0;
+                    m_perf_pc_max_us = 0;
+                    m_perf_pc_n = 0;
                 }
             }
             catch (...)
