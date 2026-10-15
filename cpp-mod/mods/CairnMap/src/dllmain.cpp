@@ -1238,7 +1238,7 @@ inline bool g_wp_on = false;
         // whose bUnlockMapPoint is a world/host flag that on a dedicated server reports only the
         // ~22 auto-opened points, so towers the player personally unlocked still read "locked".
         // Same record + walk as gather(), one array.
-        inline auto gather_ft_unlocked(std::unordered_set<std::wstring>& out) -> bool
+        inline auto gather_ft_unlocked(std::unordered_set<std::wstring>& out, UObject* ctx = nullptr) -> bool
         {
             static Offsets off;
             if (!resolve(off))
@@ -1247,7 +1247,7 @@ inline bool g_wp_on = false;
             }
             auto* util_cdo =
                 UObjectGlobals::StaticFindObject(nullptr, nullptr, STR("/Script/Pal.Default__PalUtility"));
-            auto* world_ctx = UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
+            auto* world_ctx = ctx ? ctx : UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
             if (!util_cdo || !world_ctx)
             {
                 return false;
@@ -1426,6 +1426,7 @@ inline bool g_wp_on = false;
         // per-map-body state (SPEC 2.4): pool keyed by the live canvas
         std::wstring m_canvas_full_name;
         UObject* m_layer_canvas = nullptr;                 // our own CanvasPanel
+        int32_t m_layer_canvas_idx = -1;                   // its object-array slot, for slot_live()
         UObject* m_layer_slot = nullptr;                   // its canvas slot
         uint8_t m_mask_geom[64] = {};                      // last-seen mask LayoutData
         // layer ids: 0..N-1 = Data::kLayers index; 1000 = effigies, 1001 = notes,
@@ -1596,6 +1597,7 @@ inline bool g_wp_on = false;
 
         // interface panel (P2): screen-fixed rows with native checkboxes
         UObject* m_panel_canvas = nullptr;
+        int32_t m_panel_canvas_idx = -1;   // its object-array slot: see panel_live()
         // The config modal's centred card canvas (a child of m_panel_canvas, rebuilt every
         // layout while the menu is open; null when closed). Its children are card-relative.
         UObject* m_card_canvas = nullptr;
@@ -1674,9 +1676,29 @@ inline bool g_wp_on = false;
         // Heartbeat: last time the per-frame EngineTick hook actually ran. On a server the
         // hook fires during the startup/menu tick then goes silent once the world is live,
         // which froze the compass empty (it is the hook's only driver). on_update watches
-        // this and re-drives the compass at ~3 Hz when the hook stalls -- the two never
-        // overlap (mutually exclusive by the staleness window).
-        std::chrono::steady_clock::time_point m_last_frame_hook{};
+        // this and re-drives the compass at ~3 Hz when the hook stalls. Written on the game
+        // thread, read on the update thread: steady_clock ticks in an atomic.
+        std::atomic<long long> m_last_frame_hook{0};
+        auto stamp_frame_hook() -> void
+        {
+            m_last_frame_hook.store(std::chrono::steady_clock::now().time_since_epoch().count(),
+                                    std::memory_order_relaxed);
+        }
+        // ONE lock over all of Lodestone's own state (dot pool, nearest set, panel, HUD
+        // caches, settings), shared by its two drivers: the game thread's per-frame HUD
+        // driver (minimap_frame) and the update thread's 300 ms map tick (tick_map). They
+        // used to run concurrently with no lock at all -- the update thread rebuilt
+        // m_nearest and grew m_dots while the game thread iterated both, and on a stalled
+        // heartbeat both ran the compass at once. Rules that keep it safe:
+        //   - the game thread only TRY-locks and skips the frame if the map tick holds it,
+        //     so it can never stall the game;
+        //   - it is taken OUTSIDE every __try function: the build is /EHsc, so an access
+        //     violation swallowed by an SEH guard does not run destructors, and a lock_guard
+        //     inside that frame would stay locked for good;
+        //   - object-array walks run BEFORE it (tick_walks_seh), never under it.
+        // Lock order: m_state_mx, then m_live_mx. Nothing takes m_state_mx while holding
+        // m_live_mx.
+        std::mutex m_state_mx;
         // SEH tripwire: counts access violations the tick_map guard swallowed. Silent in
         // the normal case; if a future teardown race faults, this surfaces it in the log
         // (from the C++ layer, since the __except scope may not hold C++ objects).
@@ -1698,6 +1720,9 @@ inline bool g_wp_on = false;
         // walk. See hud_root().
         UObject* m_hud_root = nullptr;
         int32_t m_hud_root_idx = -1;   // object-array slot of the cached HUD root, for slot_live()
+        UObject* m_hud_owner = nullptr;   // the WBP_PlayerUI that owns m_hud_root
+        int32_t m_hud_owner_idx = -1;
+        bool m_map_shown = false;   // tick_map saw the world map open (the HUD hides behind it)
         std::chrono::steady_clock::time_point m_next_hud_walk{};
         // Idle-skip: the last pose we actually drew the minimap for; skip the per-frame
         // arrow/dot work (and its Slate invalidation) while the player holds still.
@@ -1733,6 +1758,15 @@ inline bool g_wp_on = false;
         // Cached player controller for the minimap -- resolving it is a ~20 ms object-
         // array walk, so it must never be per-frame. Cleared on HUD rebuild.
         UObject* m_mm_pc = nullptr;
+        int32_t m_mm_pc_idx = -1;   // its object-array slot: every use goes through live_mm_pc()
+        // The cached controller if it is still the object in its slot, else null. Callers
+        // used it as world context (catch counts, schematic flags, IsNight, terrain spawn)
+        // and K2_GetPawn'd it unchecked; after a world change that was a call through a
+        // freed pointer, caught by SEH only when it happened to fault.
+        auto live_mm_pc() const -> UObject*
+        {
+            return slot_live(m_mm_pc, m_mm_pc_idx) ? m_mm_pc : nullptr;
+        }
         bool m_mm_pc_logged = false;
 
         // Compass strip (#24 revival). Own HUD canvas on the same WBP_PlayerUI root as
@@ -1822,6 +1856,7 @@ inline bool g_wp_on = false;
         std::mutex m_live_mx;
         std::vector<LiveCand> m_live_cands[kLiveKinds];   // guarded by m_live_mx
         bool m_live_cands_fresh[kLiveKinds]{};            // guarded by m_live_mx
+        bool m_live_cands_walked[kLiveKinds]{};           // guarded by m_live_mx: list came from a walk
         int m_live_walk_idx = 0;                                    // update thread: round-robin kind
         std::chrono::steady_clock::time_point m_next_live_walk{};   // update thread
         std::atomic<bool> m_live_player_ok{false};   // game thread has a player; gates the walks
@@ -2827,6 +2862,30 @@ inline bool g_wp_on = false;
             }
         }
 
+        // What find_map found, with each widget's object-array slot so the locked half of
+        // the tick can prove it is still alive (slot_live) before touching it.
+        struct MapFind
+        {
+            UObject* root = nullptr;
+            UObject* body_canvas = nullptr;
+            UObject* mask = nullptr;
+            int32_t root_idx = -1;
+            int32_t body_idx = -1;
+            int32_t mask_idx = -1;
+            bool open = false;
+        };
+        auto find_map_timed(MapFind& f) -> void
+        {
+            PerfMax<std::atomic<long long>> perf{m_perf_find_map_max_us};
+            f.open = find_map(f.root, f.body_canvas, f.mask);
+            if (f.open)
+            {
+                f.root_idx = f.root->GetInternalIndex();
+                f.body_idx = f.body_canvas->GetInternalIndex();
+                f.mask_idx = f.mask->GetInternalIndex();
+            }
+        }
+
         // Find the visible map body's root (screen-fixed canvas) + Canvas_MapBody
         // (pans/zooms) + Canvas_ForIcon_Mask.
         auto find_map(UObject*& out_root, UObject*& out_map_body_canvas, UObject*& out_mask_canvas) -> bool
@@ -2955,6 +3014,7 @@ inline bool g_wp_on = false;
                 log_once(L"layer canvas construction failed");
                 return false;
             }
+            m_layer_canvas_idx = m_layer_canvas->GetInternalIndex();
             // ⚠ SPEC 2.4: our icons live ONLY in our own canvas; the game's
             // Canvas_ForIcon_Mask children are rebuilt/iterated every open and
             // foreign widgets in there crash the second open (proven).
@@ -3124,6 +3184,84 @@ inline bool g_wp_on = false;
             return idx;
         }
 
+        // Map-open source for a live actor kind. scan_live_candidates already walks these four
+        // classes on this thread, round-robin, for the compass (each list <= ~8 s old), so a
+        // map open reuses its latest list -- dead entries dropped by slot_live -- instead of
+        // walking again. A map open used to make four such walks (45-110 ms each, climbing all
+        // session; 'live scans' was ~93 % of a 0.9-1.4 s open on 10-14). Falls back to a walk
+        // only when there is no list yet (layer just turned on, world just loaded). Callers
+        // skip layers that are off: the scan never walks those either, and turning one on
+        // re-places (drain_pending_apply), which lands here with a fresh walk.
+        auto live_objects(int kind, const wchar_t* cls, std::vector<UObject*>& out) -> void
+        {
+            out.clear();
+            std::vector<LiveCand> cands;
+            bool have = false;
+            {
+                std::lock_guard<std::mutex> lock(m_live_mx);
+                if (m_live_cands_walked[kind])
+                {
+                    cands = m_live_cands[kind];
+                    have = true;
+                }
+            }
+            if (!have)
+            {
+                UObjectGlobals::FindAllOf(cls, out);
+                return;
+            }
+            out.reserve(cands.size());
+            for (const auto& c : cands)
+            {
+                if (slot_live(c.obj, c.idx))
+                {
+                    out.push_back(c.obj);
+                }
+            }
+        }
+
+        // The three location-point sets behind place_live_pois, kept per world. They are
+        // plain UObjects registered once with the world, not streamed actors: 174 fast-travel
+        // points, 8 towers and 5 sealed realms on every one of 61 opens in a 10-14 session.
+        // Re-walked when any cached point has died, on a world change
+        // (invalidate_world_caches), and every 5 minutes as a backstop.
+        std::vector<LiveCand> m_poi_cache[3];
+        std::chrono::steady_clock::time_point m_poi_cache_at[3]{};
+        auto poi_objects(size_t which, const wchar_t* cls, std::vector<UObject*>& out) -> void
+        {
+            out.clear();
+            auto& cache = m_poi_cache[which];
+            const auto now = std::chrono::steady_clock::now();
+            bool fresh = !cache.empty() && now < m_poi_cache_at[which] + std::chrono::minutes(5);
+            for (const auto& c : cache)
+            {
+                if (!fresh)
+                {
+                    break;
+                }
+                fresh = slot_live(c.obj, c.idx);
+            }
+            if (fresh)
+            {
+                out.reserve(cache.size());
+                for (const auto& c : cache)
+                {
+                    out.push_back(c.obj);
+                }
+                return;
+            }
+            UObjectGlobals::FindAllOf(cls, out);
+            cache.clear();
+            for (auto* o : out)
+            {
+                if (o)
+                {
+                    cache.push_back({o, o->GetInternalIndex()});
+                }
+            }
+            m_poi_cache_at[which] = now;
+        }
+
         // Enumerate PalEgg loot actors currently streamed in and place a dot per
         // egg (projected from its world location). Returns the count placed.
         auto place_live_eggs(UClass* image_class) -> size_t
@@ -3132,8 +3270,12 @@ inline bool g_wp_on = false;
             {
                 return 0;
             }
+            if (!is_layer_on(kEggLayer))
+            {
+                return 0;   // see live_objects: an off layer is not scanned
+            }
             std::vector<UObject*> eggs;
-            UObjectGlobals::FindAllOf(STR("PalMapObjectPalEgg"), eggs);
+            live_objects(kLiveEgg, L"PalMapObjectPalEgg", eggs);
             size_t shown = 0;
             for (auto* egg : eggs)
             {
@@ -3198,13 +3340,14 @@ inline bool g_wp_on = false;
             // The LOCAL player's unlocked fast-travel set (per-player, replicated) -- the real
             // filter on a dedicated server, where IsUnlockMapPoint's world flag under-reports.
             std::unordered_set<std::wstring> ft_unlocked;
-            const bool have_ft = Collected::gather_ft_unlocked(ft_unlocked);
+            const bool have_ft = Collected::gather_ft_unlocked(ft_unlocked, world_pc());
             size_t ft_by_player = 0, ft_by_worldflag = 0;   // diagnostic: which filter caught what
             size_t shown = 0;
-            for (const auto& poi : kPois)
+            for (size_t pi = 0; pi < std::size(kPois); ++pi)
             {
+                const auto& poi = kPois[pi];
                 std::vector<UObject*> objs;
-                UObjectGlobals::FindAllOf(poi.cls, objs);
+                poi_objects(pi, poi.cls, objs);
                 // Total fast-travel points (all, locked+unlocked) = the badge denominator.
                 if (poi.layer_id == kFastTravelLayer && !objs.empty())
                 {
@@ -3632,7 +3775,7 @@ inline bool g_wp_on = false;
             wild = nullptr;
             auto* util = UObjectGlobals::StaticFindObject(
                 nullptr, nullptr, STR("/Script/Pal.Default__PalMasterDataTablesUtility"));
-            auto* world_ctx = UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
+            auto* world_ctx = world_pc();
             if (!util || !world_ctx)
             {
                 return false;
@@ -3669,8 +3812,12 @@ inline bool g_wp_on = false;
             {
                 return 0;
             }
+            if (!is_layer_on(kDungeonLayer))
+            {
+                return 0;   // see live_objects: an off layer is not scanned
+            }
             std::vector<UObject*> objs;
-            UObjectGlobals::FindAllOf(STR("PalDungeonEntrance"), objs);
+            live_objects(kLiveDungeon, L"PalDungeonEntrance", objs);
             std::vector<std::pair<double, double>> pts;
             for (auto* o : objs)
             {
@@ -3764,9 +3911,13 @@ inline bool g_wp_on = false;
             {
                 return 0;
             }
-            refresh_schematic_done();
+            if (!is_layer_on(kSchematicLayer))
+            {
+                return 0;   // see live_objects: an off layer is not scanned
+            }
+            refresh_schematic_done(world_pc());
             std::vector<UObject*> objs;
-            UObjectGlobals::FindAllOf(STR("BP_LevelObject_ItemPickupTower_C"), objs);
+            live_objects(kLiveSchematic, L"BP_LevelObject_ItemPickupTower_C", objs);
             std::vector<std::pair<double, double>> pts;
             size_t done = 0;
             for (auto* o : objs)
@@ -3821,21 +3972,13 @@ inline bool g_wp_on = false;
             return shown;
         }
 
-        // Scan the streamed-in PalCharacter actors, keep only the rare ("lucky") ones, and
-        // return the nearest to (px,py) in world units. rare/total feed the viability probe
-        // log (are lucky pals even visible on a dedicated-server client?). IsRarePal is a
-        // no-arg bool getter on the replicated IndividualParameter; skip an actor whose
-        // CharacterParameterComponent/IndividualParameter is still null -- it replicates a beat
-        // after spawn (APalCharacter has a CheckIndividualParameterReplicate timer).
-        auto find_nearest_lucky(double px, double py, double& out_wx, double& out_wy, double& out_dist,
-                                int& rare, int& total) -> bool
-        {
-            std::vector<UObject*> chars;
-            UObjectGlobals::FindAllOf(STR("PalCharacter"), chars);
-            return nearest_lucky_among(chars, px, py, out_wx, out_wy, out_dist, rare, total);
-        }
-
-        // The rare filter + nearest pick over an already-gathered list of PalCharacters.
+        // The rare filter + nearest pick over an already-gathered list of PalCharacters: keep
+        // only the rare ("lucky") ones and return the nearest to (px,py) in world units.
+        // rare/total feed the viability probe log (are lucky pals even visible on a
+        // dedicated-server client?). IsRarePal is a no-arg bool getter on the replicated
+        // IndividualParameter; skip an actor whose CharacterParameterComponent/
+        // IndividualParameter is still null -- it replicates a beat after spawn (APalCharacter
+        // has a CheckIndividualParameterReplicate timer).
         auto nearest_lucky_among(const std::vector<UObject*>& chars, double px, double py, double& out_wx,
                                  double& out_wy, double& out_dist, int& rare, int& total) -> bool
         {
@@ -4115,9 +4258,9 @@ inline bool g_wp_on = false;
         // Nearest-only. Logs the rare/total probe so a "0 rare of N" server result is visible.
         auto place_nearest_lucky(UClass* image_class) -> size_t
         {
-            if (!m_calibration)
+            if (!m_calibration || !is_layer_on(kLuckyLayer))
             {
-                return 0;
+                return 0;   // see live_objects: an off layer is not scanned
             }
             double px = 0, py = 0, pz = 0;
             if (!player_pos(px, py, pz))
@@ -4126,7 +4269,9 @@ inline bool g_wp_on = false;
             }
             double wx = 0, wy = 0, dist = 0;
             int rare = 0, total = 0;
-            if (!find_nearest_lucky(px, py, wx, wy, dist, rare, total))
+            std::vector<UObject*> chars;
+            live_objects(kLivePal, L"PalCharacter", chars);
+            if (!nearest_lucky_among(chars, px, py, wx, wy, dist, rare, total))
             {
                 Output::send<LogLevel::Default>(STR("[Lodestone] lucky: {} rare of {} pals (none nearby)\n"),
                                                 rare, total);
@@ -4234,6 +4379,7 @@ inline bool g_wp_on = false;
             std::lock_guard<std::mutex> lock(m_live_mx);
             m_live_cands[kind] = std::move(found);
             m_live_cands_fresh[kind] = true;
+            m_live_cands_walked[kind] = wanted;
         }
 
         // Refresh the compass's nearest-of-each for the ACTOR-based layers (eggs, dungeons,
@@ -4324,7 +4470,7 @@ inline bool g_wp_on = false;
                 {
                     // Skips towers this player has already solved so the compass/minimap
                     // point at the nearest one still WORTH walking to.
-                    refresh_schematic_done(m_mm_pc);
+                    refresh_schematic_done(live_mm_pc());
                     double best = 0.0;
                     for (auto* o : objs)
                     {
@@ -4371,10 +4517,11 @@ inline bool g_wp_on = false;
                     LiveNearest cn{};
                     if (is_layer_on(kCatchLayer))
                     {
-                        refresh_capture_counts(m_mm_pc);
+                        UObject* const pc = live_mm_pc();
+                        refresh_capture_counts(pc);
                         std::wstring species;
                         int32_t count = 0;
-                        cn.valid = nearest_uncaught_among(objs, m_mm_pc, px, py, cn.wx, cn.wy, cn.dist, species, count);
+                        cn.valid = pc && nearest_uncaught_among(objs, pc, px, py, cn.wx, cn.wy, cn.dist, species, count);
                         // Say which one, when the target changes -- the compass shows a
                         // sphere and a distance, not a name. At most one line per 15 s.
                         if (cn.valid && species != m_catch_species && now >= m_next_catch_log)
@@ -4610,7 +4757,7 @@ inline bool g_wp_on = false;
             };
             UObject* util = UObjectGlobals::StaticFindObject<UObject*>(
                 nullptr, nullptr, STR("/Script/Pal.Default__PalMasterDataTablesUtility"));
-            UObject* ctx = player_controller();
+            UObject* ctx = world_pc();
             UFunction* fn = util ? util->GetFunctionByNameInChain(FName(STR("GetLocalizedText"), FNAME_Find))
                                  : nullptr;
             bool can_call = (util && ctx && fn);
@@ -4773,6 +4920,10 @@ inline bool g_wp_on = false;
         // changes (open / apply / cancel / fold / letter-filter) still relayout.
         auto update_selection_visuals() -> void
         {
+            if (!panel_live())
+            {
+                return;
+            }
             std::vector<std::wstring> pal_list;
             bool have_pal_list = false;
             for (auto& row : m_panel_rows)
@@ -5227,12 +5378,26 @@ inline bool g_wp_on = false;
             return UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
         }
 
+        // World context for a reflected call: the controller the game thread last validated
+        // (published_pc: slot-checked, never walks), else -- before the first publish -- the
+        // FindFirstOf walk. A map open used to make 5-8 of those walks, one per helper that
+        // wanted a controller (player position, spawner tables, collected flags, unlocked
+        // fast travel, schematic flags), each a full object-array walk.
+        auto world_pc() -> UObject*
+        {
+            if (UObject* pc = published_pc())
+            {
+                return pc;
+            }
+            return player_controller();
+        }
+
         // Player world position, or false when there is no player to ask (title
         // screen, loading). Shared by the nearest readout and the compass, which want
         // it at different moments: one on map open, one on a timer with the map shut.
         auto player_pos(double& px, double& py, double& pz) -> bool
         {
-            UObject* pc = player_controller();
+            UObject* pc = world_pc();
             if (!pc)
             {
                 return false;
@@ -5258,9 +5423,22 @@ inline bool g_wp_on = false;
             m_hud_root = nullptr;   // force hud_root() to re-walk for the fresh HUD
             m_next_hud_walk = {};   // ...now, not when the once-a-minute re-confirm comes due
             m_hud_root_idx = -1;
+            m_hud_owner = nullptr;
+            m_hud_owner_idx = -1;
             m_pc_pub.store(nullptr);   // the update thread must not borrow a controller we just lost
             m_pc_pub_idx.store(-1);
             m_local_pawn = nullptr;
+            for (auto& cache : m_poi_cache)
+            {
+                cache.clear();   // the next world registers its own points
+            }
+            {
+                std::lock_guard<std::mutex> lock(m_live_mx);
+                for (bool& walked : m_live_cands_walked)
+                {
+                    walked = false;   // lists hold the old world's actors: walk afresh
+                }
+            }
         }
 
         // A player controller the update thread may use as world context: the one the game
@@ -5298,7 +5476,7 @@ inline bool g_wp_on = false;
             // K2_GetPawn below (a reflected call, not a walk); only re-resolve when that
             // fails (world change). A dangling cached PC during teardown AVs into the
             // minimap_frame SEH guard, and the rebuild-reset clears the cache.
-            UObject* pc = m_mm_pc;
+            UObject* pc = live_mm_pc();
             Engine::ParamsGetPawn gp{};
             if (!pc || !Engine::call(pc, L"K2_GetPawn", gp) || !gp.ReturnValue)
             {
@@ -5323,6 +5501,7 @@ inline bool g_wp_on = false;
                     pc = player_controller();
                 }
                 m_mm_pc = pc;
+                m_mm_pc_idx = pc ? pc->GetInternalIndex() : -1;
                 if (pc && !m_mm_pc_logged)
                 {
                     m_mm_pc_logged = true;
@@ -5397,6 +5576,10 @@ inline bool g_wp_on = false;
             }
             m_emit_cursor = 0;
             m_layer_ranges.clear();
+            // The effigy/note index list is rebuilt below with the pool. Kept across a
+            // re-place (Apply with a Track Pal / effigy-type change) it held indices into the
+            // OLD layout, so refresh_collected hid whatever ore/chest dot now sat there.
+            m_guid_dots.clear();
             m_ranges_ok = true;
             size_t placed = 0;
             const auto t0 = std::chrono::steady_clock::now();
@@ -5437,7 +5620,7 @@ inline bool g_wp_on = false;
             const auto t_static = std::chrono::steady_clock::now();
             // effigies & notes, filtered by the live collected set
             std::unordered_set<std::wstring> collected;
-            const bool have_flags = Collected::gather(collected);
+            const bool have_flags = Collected::gather(collected, world_pc());
             const auto t_flags = std::chrono::steady_clock::now();
             // one-shot diagnostic (Debug=1): reveals the obtain-flag key format vs our GUIDs
             if (g_debug && !m_flag_probe_done)
@@ -5953,7 +6136,7 @@ inline bool g_wp_on = false;
                 return;
             }
             std::unordered_set<std::wstring> collected;
-            if (!Collected::gather(collected))
+            if (!Collected::gather(collected, world_pc()))
             {
                 return;
             }
@@ -5962,6 +6145,10 @@ inline bool g_wp_on = false;
             dot_keys.reserve(m_guid_dots.size());
             for (const auto& gd : m_guid_dots)
             {
+                if (gd.dot_index >= m_dots.size())
+                {
+                    continue;
+                }
                 const bool is_collected = collected.contains(gd.key);
                 hidden += is_collected ? 1 : 0;
                 m_dots[gd.dot_index].base_hidden = is_collected;
@@ -6268,6 +6455,28 @@ inline bool g_wp_on = false;
             return invisible;   // may be null: caller waits rather than guessing
         }
 
+        // The panel canvas is still the object we built. Its rows (checkboxes, labels,
+        // cards) are its children, so they live and die with it.
+        auto panel_live() const -> bool
+        {
+            return slot_live(m_panel_canvas, m_panel_canvas_idx);
+        }
+        // Forget the panel -- pointer writes only, safe after it was collected.
+        auto drop_panel() -> void
+        {
+            m_panel_canvas = nullptr;
+            m_panel_canvas_idx = -1;
+            m_panel_slot = nullptr;
+            m_card_canvas = nullptr;
+            m_card_slot = nullptr;
+            m_relic_name_lbl = nullptr;
+            m_pal_name_lbl = nullptr;
+            m_panel_rows.clear();
+            m_panel_cats.clear();
+            m_panel_relayout = false;
+            m_panel_first_poll = true;
+        }
+
         // Build the interface panel once per map instance, in a screen-fixed
         // canvas (not the panning map canvas). Rows: [checkbox][dot][label].
         auto build_panel(UObject* root_in) -> void
@@ -6277,6 +6486,13 @@ inline bool g_wp_on = false;
                 return;
             }
             UObject* root = screen_canvas();
+            if (m_panel_canvas && !panel_live())
+            {
+                // The panel died with its map base (rebuilt on a map/world change). Drop
+                // the pointers without touching them; the rows' checkboxes and labels went
+                // with it, and poll_panel / refresh_nearest must not call into them.
+                drop_panel();
+            }
             if (!root)
             {
                 // No map base this tick. Wait for one; never fall back to the map body
@@ -6300,12 +6516,7 @@ inline bool g_wp_on = false;
                 {
                     return;
                 }
-                m_panel_canvas = nullptr;
-                m_panel_slot = nullptr;
-                m_panel_rows.clear();
-                m_panel_cats.clear();
-                m_panel_relayout = false;
-                m_panel_first_poll = true;
+                drop_panel();
             }
             auto* canvas_class =
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.CanvasPanel"));
@@ -6353,6 +6564,7 @@ inline bool g_wp_on = false;
             {
                 return;
             }
+            m_panel_canvas_idx = m_panel_canvas->GetInternalIndex();
             Engine::ParamsAddChildToCanvas add{m_panel_canvas, nullptr};
             if (!Engine::call(root, L"AddChildToCanvas", add) || !add.ReturnValue)
             {
@@ -6395,7 +6607,7 @@ inline bool g_wp_on = false;
         // (tens, not the thousands the dot pool deals with) that pooling is noise.
         auto layout_panel() -> void
         {
-            if (!m_panel_canvas || !m_panel_slot)
+            if (!panel_live() || !m_panel_slot)
             {
                 return;
             }
@@ -6901,10 +7113,14 @@ inline bool g_wp_on = false;
                 // Layers with a real "collected" state show found/total (e.g. Effigies 12/407,
                 // Fast Travel 22/174); everything else shows a plain total.
                 const int found = layer_found(it.id);
+                // An off live-actor layer is never scanned (live_objects), so it has no count.
+                const bool unscanned = !is_layer_on(it.id) &&
+                                       (it.id == kEggLayer || it.id == kDungeonLayer ||
+                                        it.id == kSchematicLayer || it.id == kLuckyLayer);
                 const std::wstring cs =
-                    (found >= 0)
-                        ? std::to_wstring(found) + L"/" + std::to_wstring(layer_total(it.id))
-                        : std::to_wstring(layer_count(it.id));
+                    (found >= 0)  ? std::to_wstring(found) + L"/" + std::to_wstring(layer_total(it.id))
+                    : unscanned ? std::wstring(L"-")
+                                  : std::to_wstring(layer_count(it.id));
                 const double countW = 8.0 + 7.0 * static_cast<double>(cs.size());
                 const double nameX = s.x + 26.0;
                 const double nameW = s.x + s.w - countW - 6.0 - nameX;
@@ -7071,7 +7287,7 @@ inline bool g_wp_on = false;
         // this is called after both, and again after any panel rebuild.
         auto refresh_nearest() -> void
         {
-            if (!m_have_player)
+            if (!m_have_player || !panel_live())
             {
                 return;
             }
@@ -7128,6 +7344,10 @@ inline bool g_wp_on = false;
         // Poll checkbox states; on change, update toggle + layer visibility.
         auto poll_panel() -> void
         {
+            if (!panel_live())
+            {
+                return;   // no panel this tick (map base rebuilding): nothing to read
+            }
             bool changed = false;
             int failed = 0, polled = 0;
             for (auto& row : m_panel_rows)
@@ -7353,11 +7573,13 @@ inline bool g_wp_on = false;
         // same trap that once made a census report "2 compasses"), so keep only the live
         // /Engine/Transient instance. Returns its CanvasPanel_Root, or nullptr when
         // the HUD is not up (title screen, loading).
-        auto find_player_hud() -> UObject*
+        auto find_player_hud(UObject*& owner) -> UObject*
         {
             std::vector<UObject*> all;
             UObjectGlobals::FindAllOf(STR("WBP_PlayerUI_C"), all);
+            owner = nullptr;
             UObject* fallback = nullptr;
+            UObject* fallback_owner = nullptr;
             for (auto* ui : all)
             {
                 if (!ui || ui->GetFullName().find(STR("/Engine/Transient")) == std::wstring::npos)
@@ -7378,13 +7600,16 @@ inline bool g_wp_on = false;
                 Engine::ParamsIsVisible vis{};
                 if (Engine::call(ui, L"IsVisible", vis) && vis.ReturnValue)
                 {
+                    owner = ui;
                     return *root;
                 }
                 if (!fallback)
                 {
                     fallback = *root;
+                    fallback_owner = ui;
                 }
             }
+            owner = fallback_owner;
             return fallback;
         }
 
@@ -7400,16 +7625,33 @@ inline bool g_wp_on = false;
         // (pointer-safe: derefs the slot index, never the freed pointer); a dead cache
         // forces an immediate re-walk instead of a 5 s stale window.
         //
-        // How often to walk: a root that just died is replaced at once. A live one is only
-        // re-confirmed once a minute -- in play it does not change (one build across 13
-        // map opens in a measured 20 min session), and every confirmation was a 40-55 ms
-        // walk on the game thread, every 5 s. With no HUD at all (title, loading) look
-        // again twice a second rather than on every call.
+        // How often to walk: a root that just died is replaced at once. With no HUD at all
+        // (title, loading) look again twice a second rather than on every call. A live one
+        // is re-confirmed once a minute, and the re-confirm only WALKS when the cached HUD
+        // is not the one on screen: its owner reports visible -> it is, keep it. The walk
+        // exists for a rebuilt HUD whose old instance lingers alive; that instance is not
+        // visible. In play the root never changes (one build across 13 map opens in a
+        // measured 20 min session), yet the walk ran every minute regardless: 55-86 ms on
+        // the game thread, growing all session (10-14 cost lines). The map hides the HUD
+        // too, so a hidden owner while the world map is open is not a reason to walk.
+        auto hud_owner_visible() -> bool
+        {
+            if (!slot_live(m_hud_owner, m_hud_owner_idx))
+            {
+                return false;
+            }
+            Engine::ParamsIsVisible vis{};
+            return Engine::call(m_hud_owner, L"IsVisible", vis) && vis.ReturnValue;
+        }
         auto hud_root() -> UObject*
         {
             const auto now = std::chrono::steady_clock::now();
             const bool cached_live = m_hud_root && slot_live(m_hud_root, m_hud_root_idx);
             const bool just_died = m_hud_root && !cached_live;
+            if (cached_live && now >= m_next_hud_walk && (m_map_shown || hud_owner_visible()))
+            {
+                m_next_hud_walk = now + std::chrono::milliseconds(60000);   // still the one on screen
+            }
             if (!just_died && now < m_next_hud_walk)
             {
                 return cached_live ? m_hud_root : nullptr;
@@ -7417,9 +7659,10 @@ inline bool g_wp_on = false;
             {
                 PerfMax<long long> perf{m_perf_hud_max_us};
                 ++m_perf_hud_n;
-                m_hud_root = find_player_hud();
+                m_hud_root = find_player_hud(m_hud_owner);
             }
             m_hud_root_idx = m_hud_root ? m_hud_root->GetInternalIndex() : -1;
+            m_hud_owner_idx = m_hud_owner ? m_hud_owner->GetInternalIndex() : -1;
             m_next_hud_walk = now + (m_hud_root ? std::chrono::milliseconds(60000) : std::chrono::milliseconds(500));
             return m_hud_root;
         }
@@ -7986,7 +8229,8 @@ inline bool g_wp_on = false;
                 return;
             }
             m_next_exposure_tick = now + std::chrono::milliseconds(250);
-            if (now >= m_next_night_check && m_mm_pc)
+            UObject* const night_ctx = live_mm_pc();
+            if (now >= m_next_night_check && night_ctx)
             {
                 m_next_night_check = now + std::chrono::seconds(5);
                 auto* util =
@@ -7995,7 +8239,7 @@ inline bool g_wp_on = false;
                 {
                     UObject* WorldContextObject{};   // 0x00
                     bool ReturnValue{};              // 0x08
-                } q{m_mm_pc, false};
+                } q{night_ctx, false};
                 if (util && Engine::call(util, L"IsNight", q) && q.ReturnValue != m_terrain_night)
                 {
                     m_terrain_night = q.ReturnValue;
@@ -8229,7 +8473,7 @@ inline bool g_wp_on = false;
                 // driving input + compass. Stamping at hook ENTRY (the old spot) made a
                 // fires-but-faults hook look alive forever, suppressing the fallback and
                 // freezing the compass on a server -- F7 was never consumed (Kenny).
-                m_last_frame_hook = std::chrono::steady_clock::now();
+                stamp_frame_hook();
             }
             __except (minimap_av_filter(GetExceptionCode()))
             {
@@ -8244,6 +8488,17 @@ inline bool g_wp_on = false;
             // The heartbeat (m_last_frame_hook) is stamped inside minimap_frame_seh AFTER the
             // body completes, NOT here at entry -- so a hook that fires but faults every frame
             // reads as stalled and tick_map's fallback rescues the compass (the server bug).
+            //
+            // The state lock is held for the whole frame (see m_state_mx). If the map tick has
+            // it -- placing dots on a map open, when the HUD is hidden anyway -- skip this
+            // frame rather than wait. The hook itself is healthy, so keep the heartbeat fresh:
+            // a stale one would start the update thread's fallback driver for nothing.
+            std::unique_lock<std::mutex> state(m_state_mx, std::try_to_lock);
+            if (!state.owns_lock())
+            {
+                stamp_frame_hook();
+                return;
+            }
             try
             {
                 minimap_frame_seh();
@@ -8388,9 +8643,10 @@ inline bool g_wp_on = false;
             }
             else if (g_minimap_terrain)   // opt-in live terrain capture behind the dots
             {
-                if (!m_terrain_tried && m_mm_pc && std::chrono::steady_clock::now() >= m_terrain_ready_at)
+                UObject* const terrain_pc = live_mm_pc();
+                if (!m_terrain_tried && terrain_pc && std::chrono::steady_clock::now() >= m_terrain_ready_at)
                 {
-                    init_terrain(px, py, pz, m_mm_pc);
+                    init_terrain(px, py, pz, terrain_pc);
                 }
                 else if (m_terrain_rewire && terrain_live())
                 {
@@ -9209,7 +9465,15 @@ inline bool g_wp_on = false;
         {
             try
             {
-                tick_map_seh();
+                // Walks first, WITHOUT the state lock: they only read the object array and
+                // publish through their own small lock (scan_live_candidates) or a local
+                // (find_map). A 50-110 ms walk under the lock would make the game thread skip
+                // HUD frames. The pointers they return are re-checked with slot_live once the
+                // lock is held.
+                MapFind found{};
+                tick_walks_seh(found);
+                std::lock_guard<std::mutex> state(m_state_mx);
+                tick_map_seh(found);
             }
             catch (...)
             {
@@ -9223,11 +9487,27 @@ inline bool g_wp_on = false;
                                                 m_seh_hits);
             }
         }
-        auto tick_map_seh() -> void
+        auto tick_walks_seh(MapFind& found) -> void
         {
             __try
             {
-                tick_map();
+                // Gather live-actor candidates before anything (including the fallback
+                // driver) wants to read them.
+                scan_live_candidates();
+                find_map_timed(found);
+            }
+            __except (minimap_av_filter(GetExceptionCode()))
+            {
+                found.open = false;
+                ++m_seh_hits;
+                m_seh_new = true;
+            }
+        }
+        auto tick_map_seh(const MapFind& found) -> void
+        {
+            __try
+            {
+                tick_map(found);
             }
             __except (minimap_av_filter(GetExceptionCode()))
             {
@@ -9235,7 +9515,7 @@ inline bool g_wp_on = false;
                 m_seh_new = true;
             }
         }
-        auto tick_map() -> void
+        auto tick_map(const MapFind& found) -> void
         {
             // The per-frame EngineTick hook normally drives input + minimap + compass at
             // 30 Hz. It is the compass's ONLY driver once m_minimap_fast is set -- but on a
@@ -9246,14 +9526,13 @@ inline bool g_wp_on = false;
             // staleness window keeps the two drivers mutually exclusive: the hook stamps
             // m_last_frame_hook every frame, so a live hook keeps this branch out; a dead
             // one lets it in within ~1 s. Never m_minimap_fast (hook never installed) also
-            // routes here.
-            // Gather live-actor candidates here, off the game thread, before anything
-            // below (including the fallback driver) wants to read them.
-            scan_live_candidates();
+            // routes here. The state lock (held by our caller) also keeps the two drivers
+            // from ever overlapping, whatever the heartbeat says.
             const auto tnow = std::chrono::steady_clock::now();
+            const std::chrono::steady_clock::time_point last_hook{
+                std::chrono::steady_clock::duration{m_last_frame_hook.load(std::memory_order_relaxed)}};
             const bool hook_stalled =
-                !m_minimap_fast ||
-                (tnow - m_last_frame_hook) > std::chrono::milliseconds(1000);
+                !m_minimap_fast || (tnow - last_hook) > std::chrono::milliseconds(1000);
             if (hook_stalled)
             {
                 handle_minimap_input();
@@ -9265,21 +9544,31 @@ inline bool g_wp_on = false;
                 build_minimap();
                 tick_minimap();
             }
-            UObject* root = nullptr;
-            UObject* map_body_canvas = nullptr;
-            UObject* mask = nullptr;
-            bool map_open = false;
+            // find_map ran before the lock (tick_walks_seh); the game thread may have run a
+            // frame since, so prove the three widgets are still the ones it found.
+            if (found.open && !(slot_live(found.root, found.root_idx) &&
+                                slot_live(found.body_canvas, found.body_idx) &&
+                                slot_live(found.mask, found.mask_idx)))
             {
-                PerfMax<std::atomic<long long>> perf{m_perf_find_map_max_us};
-                map_open = find_map(root, map_body_canvas, mask);
+                return;   // torn down in between: try again next tick
             }
+            UObject* const root = found.root;
+            UObject* const map_body_canvas = found.body_canvas;
+            UObject* const mask = found.mask;
+            const bool map_open = found.open;
+            m_map_shown = map_open;   // hud_root: a hidden HUD behind the map is expected
             if (!map_open)
             {
-                // map closed: collapse our overlay once (widgets stay pooled)
+                // map closed: collapse our overlay once (widgets stay pooled). The map body
+                // may already be gone with it -- a write into a freed widget does not fault,
+                // so prove the canvas is alive first.
                 if (m_layer_canvas && !m_collapsed)
                 {
-                    Engine::ParamsSetVisibility vis{Engine::Vis_Collapsed};
-                    Engine::call(m_layer_canvas, L"SetVisibility", vis);
+                    if (slot_live(m_layer_canvas, m_layer_canvas_idx))
+                    {
+                        Engine::ParamsSetVisibility vis{Engine::Vis_Collapsed};
+                        Engine::call(m_layer_canvas, L"SetVisibility", vis);
+                    }
                     m_collapsed = true;
                 }
                 m_menu_toggle_req.store(false);   // map closed: an F5 press is a no-op, not queued
@@ -9289,11 +9578,15 @@ inline bool g_wp_on = false;
 
             // ⚠ UE4SS object identity is only stable via full names (SPEC 2.3)
             const std::wstring full_name = mask->GetFullName();
-            if (full_name != m_canvas_full_name)
+            // A new body, or our overlay died under a body that kept its name: either way
+            // the pooled dots went with it and must be rebuilt, never written to.
+            if (full_name != m_canvas_full_name ||
+                (m_layer_canvas && !slot_live(m_layer_canvas, m_layer_canvas_idx)))
             {
                 // new map body instance: old widgets died with the previous tree
                 m_canvas_full_name = full_name;
                 m_layer_canvas = nullptr;
+                m_layer_canvas_idx = -1;
                 m_layer_slot = nullptr;
                 m_dots.clear();
                 m_reveal_queue.clear();   // indices point into the pool that just died
