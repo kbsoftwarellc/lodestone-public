@@ -1718,6 +1718,9 @@ inline bool g_wp_on = false;
         // walk. See hud_root().
         UObject* m_hud_root = nullptr;
         int32_t m_hud_root_idx = -1;   // object-array slot of the cached HUD root, for slot_live()
+        UObject* m_hud_owner = nullptr;   // the WBP_PlayerUI that owns m_hud_root
+        int32_t m_hud_owner_idx = -1;
+        bool m_map_shown = false;   // tick_map saw the world map open (the HUD hides behind it)
         std::chrono::steady_clock::time_point m_next_hud_walk{};
         // Idle-skip: the last pose we actually drew the minimap for; skip the per-frame
         // arrow/dot work (and its Slate invalidation) while the player holds still.
@@ -5302,6 +5305,8 @@ inline bool g_wp_on = false;
             m_hud_root = nullptr;   // force hud_root() to re-walk for the fresh HUD
             m_next_hud_walk = {};   // ...now, not when the once-a-minute re-confirm comes due
             m_hud_root_idx = -1;
+            m_hud_owner = nullptr;
+            m_hud_owner_idx = -1;
             m_pc_pub.store(nullptr);   // the update thread must not borrow a controller we just lost
             m_pc_pub_idx.store(-1);
             m_local_pawn = nullptr;
@@ -7405,11 +7410,13 @@ inline bool g_wp_on = false;
         // same trap that once made a census report "2 compasses"), so keep only the live
         // /Engine/Transient instance. Returns its CanvasPanel_Root, or nullptr when
         // the HUD is not up (title screen, loading).
-        auto find_player_hud() -> UObject*
+        auto find_player_hud(UObject*& owner) -> UObject*
         {
             std::vector<UObject*> all;
             UObjectGlobals::FindAllOf(STR("WBP_PlayerUI_C"), all);
+            owner = nullptr;
             UObject* fallback = nullptr;
+            UObject* fallback_owner = nullptr;
             for (auto* ui : all)
             {
                 if (!ui || ui->GetFullName().find(STR("/Engine/Transient")) == std::wstring::npos)
@@ -7430,13 +7437,16 @@ inline bool g_wp_on = false;
                 Engine::ParamsIsVisible vis{};
                 if (Engine::call(ui, L"IsVisible", vis) && vis.ReturnValue)
                 {
+                    owner = ui;
                     return *root;
                 }
                 if (!fallback)
                 {
                     fallback = *root;
+                    fallback_owner = ui;
                 }
             }
+            owner = fallback_owner;
             return fallback;
         }
 
@@ -7452,16 +7462,33 @@ inline bool g_wp_on = false;
         // (pointer-safe: derefs the slot index, never the freed pointer); a dead cache
         // forces an immediate re-walk instead of a 5 s stale window.
         //
-        // How often to walk: a root that just died is replaced at once. A live one is only
-        // re-confirmed once a minute -- in play it does not change (one build across 13
-        // map opens in a measured 20 min session), and every confirmation was a 40-55 ms
-        // walk on the game thread, every 5 s. With no HUD at all (title, loading) look
-        // again twice a second rather than on every call.
+        // How often to walk: a root that just died is replaced at once. With no HUD at all
+        // (title, loading) look again twice a second rather than on every call. A live one
+        // is re-confirmed once a minute, and the re-confirm only WALKS when the cached HUD
+        // is not the one on screen: its owner reports visible -> it is, keep it. The walk
+        // exists for a rebuilt HUD whose old instance lingers alive; that instance is not
+        // visible. In play the root never changes (one build across 13 map opens in a
+        // measured 20 min session), yet the walk ran every minute regardless: 55-86 ms on
+        // the game thread, growing all session (10-14 cost lines). The map hides the HUD
+        // too, so a hidden owner while the world map is open is not a reason to walk.
+        auto hud_owner_visible() -> bool
+        {
+            if (!slot_live(m_hud_owner, m_hud_owner_idx))
+            {
+                return false;
+            }
+            Engine::ParamsIsVisible vis{};
+            return Engine::call(m_hud_owner, L"IsVisible", vis) && vis.ReturnValue;
+        }
         auto hud_root() -> UObject*
         {
             const auto now = std::chrono::steady_clock::now();
             const bool cached_live = m_hud_root && slot_live(m_hud_root, m_hud_root_idx);
             const bool just_died = m_hud_root && !cached_live;
+            if (cached_live && now >= m_next_hud_walk && (m_map_shown || hud_owner_visible()))
+            {
+                m_next_hud_walk = now + std::chrono::milliseconds(60000);   // still the one on screen
+            }
             if (!just_died && now < m_next_hud_walk)
             {
                 return cached_live ? m_hud_root : nullptr;
@@ -7469,9 +7496,10 @@ inline bool g_wp_on = false;
             {
                 PerfMax<long long> perf{m_perf_hud_max_us};
                 ++m_perf_hud_n;
-                m_hud_root = find_player_hud();
+                m_hud_root = find_player_hud(m_hud_owner);
             }
             m_hud_root_idx = m_hud_root ? m_hud_root->GetInternalIndex() : -1;
+            m_hud_owner_idx = m_hud_owner ? m_hud_owner->GetInternalIndex() : -1;
             m_next_hud_walk = now + (m_hud_root ? std::chrono::milliseconds(60000) : std::chrono::milliseconds(500));
             return m_hud_root;
         }
@@ -9363,6 +9391,7 @@ inline bool g_wp_on = false;
             UObject* const map_body_canvas = found.body_canvas;
             UObject* const mask = found.mask;
             const bool map_open = found.open;
+            m_map_shown = map_open;   // hud_root: a hidden HUD behind the map is expected
             if (!map_open)
             {
                 // map closed: collapse our overlay once (widgets stay pooled)
