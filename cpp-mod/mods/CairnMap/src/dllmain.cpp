@@ -5397,6 +5397,10 @@ inline bool g_wp_on = false;
             }
             m_emit_cursor = 0;
             m_layer_ranges.clear();
+            // The effigy/note index list is rebuilt below with the pool. Kept across a
+            // re-place (Apply with a Track Pal / effigy-type change) it held indices into the
+            // OLD layout, so refresh_collected hid whatever ore/chest dot now sat there.
+            m_guid_dots.clear();
             m_ranges_ok = true;
             size_t placed = 0;
             const auto t0 = std::chrono::steady_clock::now();
@@ -5962,6 +5966,10 @@ inline bool g_wp_on = false;
             dot_keys.reserve(m_guid_dots.size());
             for (const auto& gd : m_guid_dots)
             {
+                if (gd.dot_index >= m_dots.size())
+                {
+                    continue;
+                }
                 const bool is_collected = collected.contains(gd.key);
                 hidden += is_collected ? 1 : 0;
                 m_dots[gd.dot_index].base_hidden = is_collected;
