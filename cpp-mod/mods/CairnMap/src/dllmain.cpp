@@ -1238,7 +1238,7 @@ inline bool g_wp_on = false;
         // whose bUnlockMapPoint is a world/host flag that on a dedicated server reports only the
         // ~22 auto-opened points, so towers the player personally unlocked still read "locked".
         // Same record + walk as gather(), one array.
-        inline auto gather_ft_unlocked(std::unordered_set<std::wstring>& out) -> bool
+        inline auto gather_ft_unlocked(std::unordered_set<std::wstring>& out, UObject* ctx = nullptr) -> bool
         {
             static Offsets off;
             if (!resolve(off))
@@ -1247,7 +1247,7 @@ inline bool g_wp_on = false;
             }
             auto* util_cdo =
                 UObjectGlobals::StaticFindObject(nullptr, nullptr, STR("/Script/Pal.Default__PalUtility"));
-            auto* world_ctx = UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
+            auto* world_ctx = ctx ? ctx : UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
             if (!util_cdo || !world_ctx)
             {
                 return false;
@@ -1845,6 +1845,7 @@ inline bool g_wp_on = false;
         std::mutex m_live_mx;
         std::vector<LiveCand> m_live_cands[kLiveKinds];   // guarded by m_live_mx
         bool m_live_cands_fresh[kLiveKinds]{};            // guarded by m_live_mx
+        bool m_live_cands_walked[kLiveKinds]{};           // guarded by m_live_mx: list came from a walk
         int m_live_walk_idx = 0;                                    // update thread: round-robin kind
         std::chrono::steady_clock::time_point m_next_live_walk{};   // update thread
         std::atomic<bool> m_live_player_ok{false};   // game thread has a player; gates the walks
@@ -3171,6 +3172,84 @@ inline bool g_wp_on = false;
             return idx;
         }
 
+        // Map-open source for a live actor kind. scan_live_candidates already walks these four
+        // classes on this thread, round-robin, for the compass (each list <= ~8 s old), so a
+        // map open reuses its latest list -- dead entries dropped by slot_live -- instead of
+        // walking again. A map open used to make four such walks (45-110 ms each, climbing all
+        // session; 'live scans' was ~93 % of a 0.9-1.4 s open on 10-14). Falls back to a walk
+        // only when there is no list yet (layer just turned on, world just loaded). Callers
+        // skip layers that are off: the scan never walks those either, and turning one on
+        // re-places (drain_pending_apply), which lands here with a fresh walk.
+        auto live_objects(int kind, const wchar_t* cls, std::vector<UObject*>& out) -> void
+        {
+            out.clear();
+            std::vector<LiveCand> cands;
+            bool have = false;
+            {
+                std::lock_guard<std::mutex> lock(m_live_mx);
+                if (m_live_cands_walked[kind])
+                {
+                    cands = m_live_cands[kind];
+                    have = true;
+                }
+            }
+            if (!have)
+            {
+                UObjectGlobals::FindAllOf(cls, out);
+                return;
+            }
+            out.reserve(cands.size());
+            for (const auto& c : cands)
+            {
+                if (slot_live(c.obj, c.idx))
+                {
+                    out.push_back(c.obj);
+                }
+            }
+        }
+
+        // The three location-point sets behind place_live_pois, kept per world. They are
+        // plain UObjects registered once with the world, not streamed actors: 174 fast-travel
+        // points, 8 towers and 5 sealed realms on every one of 61 opens in a 10-14 session.
+        // Re-walked when any cached point has died, on a world change
+        // (invalidate_world_caches), and every 5 minutes as a backstop.
+        std::vector<LiveCand> m_poi_cache[3];
+        std::chrono::steady_clock::time_point m_poi_cache_at[3]{};
+        auto poi_objects(size_t which, const wchar_t* cls, std::vector<UObject*>& out) -> void
+        {
+            out.clear();
+            auto& cache = m_poi_cache[which];
+            const auto now = std::chrono::steady_clock::now();
+            bool fresh = !cache.empty() && now < m_poi_cache_at[which] + std::chrono::minutes(5);
+            for (const auto& c : cache)
+            {
+                if (!fresh)
+                {
+                    break;
+                }
+                fresh = slot_live(c.obj, c.idx);
+            }
+            if (fresh)
+            {
+                out.reserve(cache.size());
+                for (const auto& c : cache)
+                {
+                    out.push_back(c.obj);
+                }
+                return;
+            }
+            UObjectGlobals::FindAllOf(cls, out);
+            cache.clear();
+            for (auto* o : out)
+            {
+                if (o)
+                {
+                    cache.push_back({o, o->GetInternalIndex()});
+                }
+            }
+            m_poi_cache_at[which] = now;
+        }
+
         // Enumerate PalEgg loot actors currently streamed in and place a dot per
         // egg (projected from its world location). Returns the count placed.
         auto place_live_eggs(UClass* image_class) -> size_t
@@ -3179,8 +3258,12 @@ inline bool g_wp_on = false;
             {
                 return 0;
             }
+            if (!is_layer_on(kEggLayer))
+            {
+                return 0;   // see live_objects: an off layer is not scanned
+            }
             std::vector<UObject*> eggs;
-            UObjectGlobals::FindAllOf(STR("PalMapObjectPalEgg"), eggs);
+            live_objects(kLiveEgg, L"PalMapObjectPalEgg", eggs);
             size_t shown = 0;
             for (auto* egg : eggs)
             {
@@ -3245,13 +3328,14 @@ inline bool g_wp_on = false;
             // The LOCAL player's unlocked fast-travel set (per-player, replicated) -- the real
             // filter on a dedicated server, where IsUnlockMapPoint's world flag under-reports.
             std::unordered_set<std::wstring> ft_unlocked;
-            const bool have_ft = Collected::gather_ft_unlocked(ft_unlocked);
+            const bool have_ft = Collected::gather_ft_unlocked(ft_unlocked, world_pc());
             size_t ft_by_player = 0, ft_by_worldflag = 0;   // diagnostic: which filter caught what
             size_t shown = 0;
-            for (const auto& poi : kPois)
+            for (size_t pi = 0; pi < std::size(kPois); ++pi)
             {
+                const auto& poi = kPois[pi];
                 std::vector<UObject*> objs;
-                UObjectGlobals::FindAllOf(poi.cls, objs);
+                poi_objects(pi, poi.cls, objs);
                 // Total fast-travel points (all, locked+unlocked) = the badge denominator.
                 if (poi.layer_id == kFastTravelLayer && !objs.empty())
                 {
@@ -3679,7 +3763,7 @@ inline bool g_wp_on = false;
             wild = nullptr;
             auto* util = UObjectGlobals::StaticFindObject(
                 nullptr, nullptr, STR("/Script/Pal.Default__PalMasterDataTablesUtility"));
-            auto* world_ctx = UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
+            auto* world_ctx = world_pc();
             if (!util || !world_ctx)
             {
                 return false;
@@ -3716,8 +3800,12 @@ inline bool g_wp_on = false;
             {
                 return 0;
             }
+            if (!is_layer_on(kDungeonLayer))
+            {
+                return 0;   // see live_objects: an off layer is not scanned
+            }
             std::vector<UObject*> objs;
-            UObjectGlobals::FindAllOf(STR("PalDungeonEntrance"), objs);
+            live_objects(kLiveDungeon, L"PalDungeonEntrance", objs);
             std::vector<std::pair<double, double>> pts;
             for (auto* o : objs)
             {
@@ -3811,9 +3899,13 @@ inline bool g_wp_on = false;
             {
                 return 0;
             }
-            refresh_schematic_done();
+            if (!is_layer_on(kSchematicLayer))
+            {
+                return 0;   // see live_objects: an off layer is not scanned
+            }
+            refresh_schematic_done(world_pc());
             std::vector<UObject*> objs;
-            UObjectGlobals::FindAllOf(STR("BP_LevelObject_ItemPickupTower_C"), objs);
+            live_objects(kLiveSchematic, L"BP_LevelObject_ItemPickupTower_C", objs);
             std::vector<std::pair<double, double>> pts;
             size_t done = 0;
             for (auto* o : objs)
@@ -3868,21 +3960,13 @@ inline bool g_wp_on = false;
             return shown;
         }
 
-        // Scan the streamed-in PalCharacter actors, keep only the rare ("lucky") ones, and
-        // return the nearest to (px,py) in world units. rare/total feed the viability probe
-        // log (are lucky pals even visible on a dedicated-server client?). IsRarePal is a
-        // no-arg bool getter on the replicated IndividualParameter; skip an actor whose
-        // CharacterParameterComponent/IndividualParameter is still null -- it replicates a beat
-        // after spawn (APalCharacter has a CheckIndividualParameterReplicate timer).
-        auto find_nearest_lucky(double px, double py, double& out_wx, double& out_wy, double& out_dist,
-                                int& rare, int& total) -> bool
-        {
-            std::vector<UObject*> chars;
-            UObjectGlobals::FindAllOf(STR("PalCharacter"), chars);
-            return nearest_lucky_among(chars, px, py, out_wx, out_wy, out_dist, rare, total);
-        }
-
-        // The rare filter + nearest pick over an already-gathered list of PalCharacters.
+        // The rare filter + nearest pick over an already-gathered list of PalCharacters: keep
+        // only the rare ("lucky") ones and return the nearest to (px,py) in world units.
+        // rare/total feed the viability probe log (are lucky pals even visible on a
+        // dedicated-server client?). IsRarePal is a no-arg bool getter on the replicated
+        // IndividualParameter; skip an actor whose CharacterParameterComponent/
+        // IndividualParameter is still null -- it replicates a beat after spawn (APalCharacter
+        // has a CheckIndividualParameterReplicate timer).
         auto nearest_lucky_among(const std::vector<UObject*>& chars, double px, double py, double& out_wx,
                                  double& out_wy, double& out_dist, int& rare, int& total) -> bool
         {
@@ -4162,9 +4246,9 @@ inline bool g_wp_on = false;
         // Nearest-only. Logs the rare/total probe so a "0 rare of N" server result is visible.
         auto place_nearest_lucky(UClass* image_class) -> size_t
         {
-            if (!m_calibration)
+            if (!m_calibration || !is_layer_on(kLuckyLayer))
             {
-                return 0;
+                return 0;   // see live_objects: an off layer is not scanned
             }
             double px = 0, py = 0, pz = 0;
             if (!player_pos(px, py, pz))
@@ -4173,7 +4257,9 @@ inline bool g_wp_on = false;
             }
             double wx = 0, wy = 0, dist = 0;
             int rare = 0, total = 0;
-            if (!find_nearest_lucky(px, py, wx, wy, dist, rare, total))
+            std::vector<UObject*> chars;
+            live_objects(kLivePal, L"PalCharacter", chars);
+            if (!nearest_lucky_among(chars, px, py, wx, wy, dist, rare, total))
             {
                 Output::send<LogLevel::Default>(STR("[Lodestone] lucky: {} rare of {} pals (none nearby)\n"),
                                                 rare, total);
@@ -4281,6 +4367,7 @@ inline bool g_wp_on = false;
             std::lock_guard<std::mutex> lock(m_live_mx);
             m_live_cands[kind] = std::move(found);
             m_live_cands_fresh[kind] = true;
+            m_live_cands_walked[kind] = wanted;
         }
 
         // Refresh the compass's nearest-of-each for the ACTOR-based layers (eggs, dungeons,
@@ -4657,7 +4744,7 @@ inline bool g_wp_on = false;
             };
             UObject* util = UObjectGlobals::StaticFindObject<UObject*>(
                 nullptr, nullptr, STR("/Script/Pal.Default__PalMasterDataTablesUtility"));
-            UObject* ctx = player_controller();
+            UObject* ctx = world_pc();
             UFunction* fn = util ? util->GetFunctionByNameInChain(FName(STR("GetLocalizedText"), FNAME_Find))
                                  : nullptr;
             bool can_call = (util && ctx && fn);
@@ -5274,12 +5361,26 @@ inline bool g_wp_on = false;
             return UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
         }
 
+        // World context for a reflected call: the controller the game thread last validated
+        // (published_pc: slot-checked, never walks), else -- before the first publish -- the
+        // FindFirstOf walk. A map open used to make 5-8 of those walks, one per helper that
+        // wanted a controller (player position, spawner tables, collected flags, unlocked
+        // fast travel, schematic flags), each a full object-array walk.
+        auto world_pc() -> UObject*
+        {
+            if (UObject* pc = published_pc())
+            {
+                return pc;
+            }
+            return player_controller();
+        }
+
         // Player world position, or false when there is no player to ask (title
         // screen, loading). Shared by the nearest readout and the compass, which want
         // it at different moments: one on map open, one on a timer with the map shut.
         auto player_pos(double& px, double& py, double& pz) -> bool
         {
-            UObject* pc = player_controller();
+            UObject* pc = world_pc();
             if (!pc)
             {
                 return false;
@@ -5310,6 +5411,17 @@ inline bool g_wp_on = false;
             m_pc_pub.store(nullptr);   // the update thread must not borrow a controller we just lost
             m_pc_pub_idx.store(-1);
             m_local_pawn = nullptr;
+            for (auto& cache : m_poi_cache)
+            {
+                cache.clear();   // the next world registers its own points
+            }
+            {
+                std::lock_guard<std::mutex> lock(m_live_mx);
+                for (bool& walked : m_live_cands_walked)
+                {
+                    walked = false;   // lists hold the old world's actors: walk afresh
+                }
+            }
         }
 
         // A player controller the update thread may use as world context: the one the game
@@ -5490,7 +5602,7 @@ inline bool g_wp_on = false;
             const auto t_static = std::chrono::steady_clock::now();
             // effigies & notes, filtered by the live collected set
             std::unordered_set<std::wstring> collected;
-            const bool have_flags = Collected::gather(collected);
+            const bool have_flags = Collected::gather(collected, world_pc());
             const auto t_flags = std::chrono::steady_clock::now();
             // one-shot diagnostic (Debug=1): reveals the obtain-flag key format vs our GUIDs
             if (g_debug && !m_flag_probe_done)
@@ -6006,7 +6118,7 @@ inline bool g_wp_on = false;
                 return;
             }
             std::unordered_set<std::wstring> collected;
-            if (!Collected::gather(collected))
+            if (!Collected::gather(collected, world_pc()))
             {
                 return;
             }
@@ -6958,10 +7070,14 @@ inline bool g_wp_on = false;
                 // Layers with a real "collected" state show found/total (e.g. Effigies 12/407,
                 // Fast Travel 22/174); everything else shows a plain total.
                 const int found = layer_found(it.id);
+                // An off live-actor layer is never scanned (live_objects), so it has no count.
+                const bool unscanned = !is_layer_on(it.id) &&
+                                       (it.id == kEggLayer || it.id == kDungeonLayer ||
+                                        it.id == kSchematicLayer || it.id == kLuckyLayer);
                 const std::wstring cs =
-                    (found >= 0)
-                        ? std::to_wstring(found) + L"/" + std::to_wstring(layer_total(it.id))
-                        : std::to_wstring(layer_count(it.id));
+                    (found >= 0)  ? std::to_wstring(found) + L"/" + std::to_wstring(layer_total(it.id))
+                    : unscanned ? std::wstring(L"-")
+                                  : std::to_wstring(layer_count(it.id));
                 const double countW = 8.0 + 7.0 * static_cast<double>(cs.size());
                 const double nameX = s.x + 26.0;
                 const double nameW = s.x + s.w - countW - 6.0 - nameX;
