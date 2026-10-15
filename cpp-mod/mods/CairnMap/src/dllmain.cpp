@@ -1637,6 +1637,19 @@ inline bool g_wp_on = false;
         UObject* m_terrain_comp = nullptr;           // its USceneCaptureComponent2D
         UObject* m_captured_material = nullptr;      // vanilla M_CapturedMaterial, wraps the RT (pinned)
         bool m_terrain_tried = false;                // init attempted (once, or after a failure)
+        // Object-array slots of the three capture objects, captured at init, so every
+        // later touch can be gated on slot_live(). An every-frame capture whose render
+        // target was collected sends the render thread a null resource: the 0x8c crash
+        // on entering the world (RenderThread 0, SceneCaptureRendering CaptureCommand).
+        int32_t m_terrain_rt_idx = -1;
+        int32_t m_terrain_actor_idx = -1;
+        int32_t m_terrain_comp_idx = -1;
+        // Earliest moment init_terrain may spawn: pushed out whenever the capture is
+        // dropped, so a world that has just come up settles before we spawn into it.
+        std::chrono::steady_clock::time_point m_terrain_ready_at{};
+        bool m_terrain_rewire = false;               // HUD rebuilt around a live capture: re-show its RT
+        bool m_terrain_offthread_logged = false;     // one-shot: terrain skipped on the update thread
+        std::atomic<DWORD> m_game_tid{0};            // the EngineTick hook's thread (the game thread)
         double m_terrain_ortho = 0.0;                // last OrthoWidth pushed (to react to zoom)
         int m_terrain_rot_log = 0;                    // one-shot: log the capture's actual look direction
         bool m_you_arrowed = false;                  // arrow texture applied yet?
@@ -2777,6 +2790,9 @@ inline bool g_wp_on = false;
                         return;
                     }
                     m_next_mm_frame = now + std::chrono::milliseconds(33);
+                    // EngineTick is the game thread by definition: remember which one it
+                    // is, so terrain work can refuse to run anywhere else.
+                    m_game_tid.store(GetCurrentThreadId(), std::memory_order_relaxed);
                     // Two guard layers (see minimap_frame): C++ catch keeps the hook
                     // alive on a ProcessEvent-not-available throw; SEH inside swallows an
                     // access violation from a freed object during world teardown.
@@ -5238,7 +5254,7 @@ inline bool g_wp_on = false;
         auto invalidate_world_caches() -> void
         {
             drop_compass_caches();
-            drop_minimap_caches();
+            drop_minimap_caches(/*world_gone=*/true);
             m_hud_root = nullptr;   // force hud_root() to re-walk for the fresh HUD
             m_next_hud_walk = {};   // ...now, not when the once-a-minute re-confirm comes due
             m_hud_root_idx = -1;
@@ -7272,10 +7288,43 @@ inline bool g_wp_on = false;
             m_compass_marker_ix.clear();
         }
 
-        // Same, for the minimap. A HUD rebuild often means the world changed too, which
-        // GC's the capture actor -- drop those pointers so init_terrain re-spawns rather
-        // than teleporting a dangling actor.
-        auto drop_minimap_caches() -> void
+        // Has any terrain capture object we hold been collected? Never dereferences them
+        // (slot_live reads the object array by index). A null pointer is "not held", not
+        // dead -- so a capture that came up without a component does not respawn forever.
+        auto terrain_dead() const -> bool
+        {
+            return (m_terrain_actor && !slot_live(m_terrain_actor, m_terrain_actor_idx)) ||
+                   (m_terrain_comp && !slot_live(m_terrain_comp, m_terrain_comp_idx)) ||
+                   (m_terrain_rt && !slot_live(m_terrain_rt, m_terrain_rt_idx));
+        }
+
+        // A complete, still-live capture (worth keeping across a HUD rebuild).
+        auto terrain_live() const -> bool
+        {
+            return m_terrain_actor && m_terrain_comp && m_terrain_rt && !terrain_dead();
+        }
+
+        // Forget the capture (pointer writes only; never touches the objects) and hold
+        // the next spawn back until the world has had a few seconds to settle.
+        auto drop_terrain() -> void
+        {
+            m_terrain_tried = false;
+            m_terrain_rewire = false;
+            m_terrain_actor = nullptr;
+            m_terrain_comp = nullptr;
+            m_terrain_rt = nullptr;
+            m_terrain_actor_idx = -1;
+            m_terrain_comp_idx = -1;
+            m_terrain_rt_idx = -1;
+            m_terrain_ready_at = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        }
+
+        // Same, for the minimap. world_gone = the pawn/world went (invalidate_world_caches):
+        // the capture lives in that world, so drop it. Otherwise only the HUD was rebuilt
+        // in the same world: a still-live capture is KEPT and re-shown on the new
+        // background -- dropping it used to spawn a second one and leave the first
+        // rendering every frame, owned by nobody.
+        auto drop_minimap_caches(bool world_gone = false) -> void
         {
             m_minimap_canvas = nullptr;
             m_minimap_canvas_idx = -1;
@@ -7289,10 +7338,14 @@ inline bool g_wp_on = false;
             m_minimap_dot_slots.clear();
             m_minimap_dot_icon.clear();
             m_minimap_dot_col.clear();
-            m_terrain_tried = false;
-            m_terrain_actor = nullptr;
-            m_terrain_comp = nullptr;
-            m_terrain_rt = nullptr;
+            if (!world_gone && terrain_live())
+            {
+                m_terrain_rewire = true;
+            }
+            else
+            {
+                drop_terrain();
+            }
         }
 
         // WBP_PlayerUI's root canvas -- the always-on gameplay HUD container that
@@ -7453,7 +7506,7 @@ inline bool g_wp_on = false;
                     Engine::call(m_minimap_canvas, L"SetVisibility", v);
                     return;
                 }
-                drop_minimap_caches();   // HUD rebuilt; canvas + pooled dots + capture actor all reset
+                drop_minimap_caches();   // HUD rebuilt; canvas + pooled dots reset (a live capture is kept and re-shown)
             }
             auto* canvas_class =
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.CanvasPanel"));
@@ -7697,7 +7750,12 @@ inline bool g_wp_on = false;
             return Engine::call(gdm.ReturnValue, L"SetTextureParameterValue", stp);
         }
 
-        auto init_terrain(double px, double py, double pz) -> void
+        // pc = the controller player_pose just validated (it answered K2_GetPawn with a
+        // pawn this frame). It is the world context for the render target and the spawn,
+        // so both land in the live world. A FindFirstOf here could return the title
+        // screen's controller while the world is being entered, putting the capture in a
+        // world that is torn down a moment later.
+        auto init_terrain(double px, double py, double pz, UObject* pc) -> void
         {
             m_terrain_tried = true;
             auto* krl = UObjectGlobals::StaticFindObject<UObject*>(
@@ -7706,7 +7764,6 @@ inline bool g_wp_on = false;
                 nullptr, nullptr, STR("/Script/Engine.Default__GameplayStatics"));
             auto* cap_class =
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.SceneCapture2D"));
-            auto* pc = UObjectGlobals::FindFirstOf(STR("PalPlayerController"));
             if (!krl || !gps || !cap_class || !pc)
             {
                 Output::send<LogLevel::Warning>(STR("[Lodestone] terrain: missing CDO/class/controller\n"));
@@ -7733,6 +7790,7 @@ inline bool g_wp_on = false;
                 return;
             }
             m_terrain_rt = crt.ReturnValue;
+            m_terrain_rt_idx = m_terrain_rt->GetInternalIndex();
 
             // 2) spawn the capture actor (deferred so we can configure before it runs)
             if (!verify_params(gps, L"BeginDeferredActorSpawnFromClass",
@@ -7762,12 +7820,14 @@ inline bool g_wp_on = false;
                 return;
             }
             m_terrain_actor = beg.ReturnValue;
+            m_terrain_actor_idx = m_terrain_actor->GetInternalIndex();
 
             // 3) configure the capture component (direct property writes, no ProcessEvent)
             if (auto** comp = m_terrain_actor->GetValuePtrByPropertyNameInChain<UObject*>(STR("CaptureComponent2D"));
                 comp && *comp)
             {
                 m_terrain_comp = *comp;
+                m_terrain_comp_idx = m_terrain_comp->GetInternalIndex();
                 if (auto* v = m_terrain_comp->GetValuePtrByPropertyNameInChain<uint8_t>(STR("ProjectionType")))
                     *v = 1;   // Orthographic
                 if (auto* v = m_terrain_comp->GetValuePtrByPropertyNameInChain<float>(STR("OrthoWidth")))
@@ -7868,28 +7928,36 @@ inline bool g_wp_on = false;
             fin.SpawnTransform = xf;
             Engine::call(gps, L"FinishSpawningActor", fin);
 
-            // 5) show the render target on the minimap background, wrapped in a material.
-            // A raw RT via SetBrushResourceObject renders flat yellow on this build; the
-            // vanilla M_CapturedMaterial (UI material whose texture param is "RenderTarget")
-            // displays it correctly -- the same trick PalMiniMap uses. make_image flips the
-            // brush draw type RoundedBox->Image without touching the material resource.
-            if (m_minimap_bg)
-            {
-                bool wrapped = wrap_rt_in_material(m_minimap_bg, m_terrain_rt);
-                if (!wrapped)
-                {
-                    // Fallback: raw RT (yellow, but proves the capture path is alive).
-                    Engine::ParamsSetBrushResourceObject tb{m_terrain_rt};
-                    Engine::call(m_minimap_bg, L"SetBrushResourceObject", tb);
-                }
-                Style::make_image(m_minimap_bg, g_minimap_px);
-                const float tb = static_cast<float>(g_terrain_brightness);
-                Engine::ParamsSetColorAndOpacity w{{tb, tb, tb, 1.0f}};
-                Engine::call(m_minimap_bg, L"SetColorAndOpacity", w);
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] terrain: RT on bg (material-wrapped={})\n"), wrapped ? 1 : 0);
-            }
+            // 5) show the render target on the minimap background
+            show_terrain_on_bg();
             Output::send<LogLevel::Default>(STR("[Lodestone] terrain: SceneCapture2D spawned + wired\n"));
+        }
+
+        // Show the capture's render target on the minimap background, wrapped in a
+        // material. A raw RT via SetBrushResourceObject renders flat yellow on this build;
+        // the vanilla M_CapturedMaterial (UI material whose texture param is
+        // "RenderTarget") displays it correctly -- the same trick PalMiniMap uses.
+        // make_image flips the brush draw type RoundedBox->Image without touching the
+        // material resource. Also re-run after a HUD rebuild around a live capture.
+        auto show_terrain_on_bg() -> void
+        {
+            if (!m_minimap_bg || !m_terrain_rt)
+            {
+                return;
+            }
+            bool wrapped = wrap_rt_in_material(m_minimap_bg, m_terrain_rt);
+            if (!wrapped)
+            {
+                // Fallback: raw RT (yellow, but proves the capture path is alive).
+                Engine::ParamsSetBrushResourceObject tb{m_terrain_rt};
+                Engine::call(m_minimap_bg, L"SetBrushResourceObject", tb);
+            }
+            Style::make_image(m_minimap_bg, g_minimap_px);
+            const float tb = static_cast<float>(g_terrain_brightness);
+            Engine::ParamsSetColorAndOpacity w{{tb, tb, tb, 1.0f}};
+            Engine::call(m_minimap_bg, L"SetColorAndOpacity", w);
+            Output::send<LogLevel::Default>(
+                STR("[Lodestone] terrain: RT on bg (material-wrapped={})\n"), wrapped ? 1 : 0);
         }
 
         // Per-tick: keep the capture straight above the player, looking down, and
@@ -7908,7 +7976,7 @@ inline bool g_wp_on = false;
         // is one float in the capture's post-process settings, and only when it has moved.
         auto update_terrain_exposure() -> void
         {
-            if (!m_terrain_comp)
+            if (!m_terrain_comp || terrain_dead())
             {
                 return;
             }
@@ -7962,6 +8030,26 @@ inline bool g_wp_on = false;
             {
                 return;
             }
+            if (terrain_dead())
+            {
+                // The world (or GC) took the capture, its component or its render target.
+                // Touching it now is the 0x8c crash; forget it and spawn a fresh one once
+                // the world has settled.
+                Output::send<LogLevel::Warning>(
+                    STR("[Lodestone] terrain: capture objects dead -- dropped, will respawn\n"));
+                // Part of it may still stand (the actor without its target): destroy that
+                // rather than leave it parked. Safe here for the same reason as the
+                // toggled-off path: game thread, and player_pose just confirmed the world.
+                if (slot_live(m_terrain_actor, m_terrain_actor_idx))
+                {
+                    struct
+                    {
+                    } noargs;
+                    Engine::call(m_terrain_actor, L"K2_DestroyActor", noargs);
+                }
+                drop_terrain();
+                return;
+            }
             Engine::ParamsTeleportTo tp{};
             tp.DestLocation = {px, py, pz + g_terrain_height};
             tp.DestRotation = {-90.0, cam_yaw, 0.0};   // pitch down, yaw spins the capture
@@ -7973,16 +8061,13 @@ inline bool g_wp_on = false;
                     *v = static_cast<float>(want_ortho);
                 m_terrain_ortho = want_ortho;
             }
-            if (m_terrain_comp)
-            {
-                // Force a capture AFTER this frame's look-down rotation is applied -- in
-                // case bCaptureEveryFrame snapshots at the stale spawn rotation (identity =
-                // horizontal), which would explain an empty/flat capture.
-                struct
-                {
-                } noargs;
-                Engine::call(m_terrain_comp, L"CaptureScene", noargs);
-            }
+            // No forced CaptureScene here. bCaptureEveryFrame already captures every frame,
+            // through the engine's own list, which holds the component weakly and skips a
+            // dead one. The forced call went through our raw pointer: once the render target
+            // was collected it queued a capture with a null target resource, and the render
+            // thread crashed writing 0x8c (four times on 2026-10-14, once on 07-21). It also
+            // rendered the scene twice per tick. (It was added in the July "flat yellow"
+            // hunt, whose real cause was the raw-RT brush -- fixed by the material wrap.)
             update_terrain_exposure();
             // One-shot: confirm the actor really points down (pitch ~ -90) a few frames in.
             if (m_terrain_rot_log < 3)
@@ -8287,11 +8372,31 @@ inline bool g_wp_on = false;
                               std::abs(py - m_mm_last_py) < 2.0 &&
                               (!has_yaw || std::abs(yaw - m_mm_last_yaw) < 0.3);
 
-            if (g_minimap_terrain)   // opt-in live terrain capture behind the dots
+            // Terrain spawns, moves and re-exposes a scene capture: GAME THREAD ONLY. The
+            // update-thread fallback drives this function during load hitches, which is
+            // exactly when the world is being built or torn down -- there the minimap shows
+            // its dots without terrain until the per-frame hook is back.
+            const bool on_game_thread = GetCurrentThreadId() == m_game_tid.load(std::memory_order_relaxed);
+            if (g_minimap_terrain && !on_game_thread)
             {
-                if (!m_terrain_tried)
+                if (!m_terrain_offthread_logged)
                 {
-                    init_terrain(px, py, pz);
+                    m_terrain_offthread_logged = true;
+                    Output::send<LogLevel::Default>(
+                        STR("[Lodestone] terrain: skipped while the update thread drives the minimap\n"));
+                }
+            }
+            else if (g_minimap_terrain)   // opt-in live terrain capture behind the dots
+            {
+                if (!m_terrain_tried && m_mm_pc && std::chrono::steady_clock::now() >= m_terrain_ready_at)
+                {
+                    init_terrain(px, py, pz, m_mm_pc);
+                }
+                else if (m_terrain_rewire && terrain_live())
+                {
+                    // HUD rebuilt around a capture that is still alive: show it again
+                    m_terrain_rewire = false;
+                    show_terrain_on_bg();
                 }
                 // Rotate the capture with the player so the ground lines up with the
                 // spun dot field; fixed north in north-up mode.
@@ -8304,22 +8409,23 @@ inline bool g_wp_on = false;
                 // lit (FinalColorLDR) rather than BaseColor. Dropping the sweep also removes a
                 // per-2.4s FindAllOf storm that had pushed the minimap tick to ~48 ms.
             }
-            else if (m_terrain_actor)
+            else if (m_terrain_actor && on_game_thread)
             {
                 // Terrain was toggled off but the capture actor is still parked -- it
                 // keeps rendering every frame (GPU cost) and is the most teardown-fragile
                 // object we own. Destroy it now: player_pose above just confirmed the
                 // world is alive, so K2_DestroyActor is safe here (a real world teardown
                 // takes the invalidate_world_caches path instead, which never calls it).
-                struct
+                // Only if it is still the actor we spawned; a collected one is just dropped.
+                if (slot_live(m_terrain_actor, m_terrain_actor_idx))
                 {
-                } noargs;
-                Engine::call(m_terrain_actor, L"K2_DestroyActor", noargs);
-                m_terrain_actor = nullptr;
-                m_terrain_comp = nullptr;
-                m_terrain_rt = nullptr;
-                m_terrain_tried = false;
-                Output::send<LogLevel::Default>(STR("[Lodestone] terrain: capture actor destroyed (toggled off)\n"));
+                    struct
+                    {
+                    } noargs;
+                    Engine::call(m_terrain_actor, L"K2_DestroyActor", noargs);
+                    Output::send<LogLevel::Default>(STR("[Lodestone] terrain: capture actor destroyed (toggled off)\n"));
+                }
+                drop_terrain();
             }
 
             // "You" marker: upgrade the gold dot to the vanilla player arrow once icons
