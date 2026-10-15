@@ -1426,6 +1426,7 @@ inline bool g_wp_on = false;
         // per-map-body state (SPEC 2.4): pool keyed by the live canvas
         std::wstring m_canvas_full_name;
         UObject* m_layer_canvas = nullptr;                 // our own CanvasPanel
+        int32_t m_layer_canvas_idx = -1;                   // its object-array slot, for slot_live()
         UObject* m_layer_slot = nullptr;                   // its canvas slot
         uint8_t m_mask_geom[64] = {};                      // last-seen mask LayoutData
         // layer ids: 0..N-1 = Data::kLayers index; 1000 = effigies, 1001 = notes,
@@ -1596,6 +1597,7 @@ inline bool g_wp_on = false;
 
         // interface panel (P2): screen-fixed rows with native checkboxes
         UObject* m_panel_canvas = nullptr;
+        int32_t m_panel_canvas_idx = -1;   // its object-array slot: see panel_live()
         // The config modal's centred card canvas (a child of m_panel_canvas, rebuilt every
         // layout while the menu is open; null when closed). Its children are card-relative.
         UObject* m_card_canvas = nullptr;
@@ -1756,6 +1758,15 @@ inline bool g_wp_on = false;
         // Cached player controller for the minimap -- resolving it is a ~20 ms object-
         // array walk, so it must never be per-frame. Cleared on HUD rebuild.
         UObject* m_mm_pc = nullptr;
+        int32_t m_mm_pc_idx = -1;   // its object-array slot: every use goes through live_mm_pc()
+        // The cached controller if it is still the object in its slot, else null. Callers
+        // used it as world context (catch counts, schematic flags, IsNight, terrain spawn)
+        // and K2_GetPawn'd it unchecked; after a world change that was a call through a
+        // freed pointer, caught by SEH only when it happened to fault.
+        auto live_mm_pc() const -> UObject*
+        {
+            return slot_live(m_mm_pc, m_mm_pc_idx) ? m_mm_pc : nullptr;
+        }
         bool m_mm_pc_logged = false;
 
         // Compass strip (#24 revival). Own HUD canvas on the same WBP_PlayerUI root as
@@ -3003,6 +3014,7 @@ inline bool g_wp_on = false;
                 log_once(L"layer canvas construction failed");
                 return false;
             }
+            m_layer_canvas_idx = m_layer_canvas->GetInternalIndex();
             // ⚠ SPEC 2.4: our icons live ONLY in our own canvas; the game's
             // Canvas_ForIcon_Mask children are rebuilt/iterated every open and
             // foreign widgets in there crash the second open (proven).
@@ -4458,7 +4470,7 @@ inline bool g_wp_on = false;
                 {
                     // Skips towers this player has already solved so the compass/minimap
                     // point at the nearest one still WORTH walking to.
-                    refresh_schematic_done(m_mm_pc);
+                    refresh_schematic_done(live_mm_pc());
                     double best = 0.0;
                     for (auto* o : objs)
                     {
@@ -4505,10 +4517,11 @@ inline bool g_wp_on = false;
                     LiveNearest cn{};
                     if (is_layer_on(kCatchLayer))
                     {
-                        refresh_capture_counts(m_mm_pc);
+                        UObject* const pc = live_mm_pc();
+                        refresh_capture_counts(pc);
                         std::wstring species;
                         int32_t count = 0;
-                        cn.valid = nearest_uncaught_among(objs, m_mm_pc, px, py, cn.wx, cn.wy, cn.dist, species, count);
+                        cn.valid = pc && nearest_uncaught_among(objs, pc, px, py, cn.wx, cn.wy, cn.dist, species, count);
                         // Say which one, when the target changes -- the compass shows a
                         // sphere and a distance, not a name. At most one line per 15 s.
                         if (cn.valid && species != m_catch_species && now >= m_next_catch_log)
@@ -4907,6 +4920,10 @@ inline bool g_wp_on = false;
         // changes (open / apply / cancel / fold / letter-filter) still relayout.
         auto update_selection_visuals() -> void
         {
+            if (!panel_live())
+            {
+                return;
+            }
             std::vector<std::wstring> pal_list;
             bool have_pal_list = false;
             for (auto& row : m_panel_rows)
@@ -5459,7 +5476,7 @@ inline bool g_wp_on = false;
             // K2_GetPawn below (a reflected call, not a walk); only re-resolve when that
             // fails (world change). A dangling cached PC during teardown AVs into the
             // minimap_frame SEH guard, and the rebuild-reset clears the cache.
-            UObject* pc = m_mm_pc;
+            UObject* pc = live_mm_pc();
             Engine::ParamsGetPawn gp{};
             if (!pc || !Engine::call(pc, L"K2_GetPawn", gp) || !gp.ReturnValue)
             {
@@ -5484,6 +5501,7 @@ inline bool g_wp_on = false;
                     pc = player_controller();
                 }
                 m_mm_pc = pc;
+                m_mm_pc_idx = pc ? pc->GetInternalIndex() : -1;
                 if (pc && !m_mm_pc_logged)
                 {
                     m_mm_pc_logged = true;
@@ -6437,6 +6455,28 @@ inline bool g_wp_on = false;
             return invisible;   // may be null: caller waits rather than guessing
         }
 
+        // The panel canvas is still the object we built. Its rows (checkboxes, labels,
+        // cards) are its children, so they live and die with it.
+        auto panel_live() const -> bool
+        {
+            return slot_live(m_panel_canvas, m_panel_canvas_idx);
+        }
+        // Forget the panel -- pointer writes only, safe after it was collected.
+        auto drop_panel() -> void
+        {
+            m_panel_canvas = nullptr;
+            m_panel_canvas_idx = -1;
+            m_panel_slot = nullptr;
+            m_card_canvas = nullptr;
+            m_card_slot = nullptr;
+            m_relic_name_lbl = nullptr;
+            m_pal_name_lbl = nullptr;
+            m_panel_rows.clear();
+            m_panel_cats.clear();
+            m_panel_relayout = false;
+            m_panel_first_poll = true;
+        }
+
         // Build the interface panel once per map instance, in a screen-fixed
         // canvas (not the panning map canvas). Rows: [checkbox][dot][label].
         auto build_panel(UObject* root_in) -> void
@@ -6446,6 +6486,13 @@ inline bool g_wp_on = false;
                 return;
             }
             UObject* root = screen_canvas();
+            if (m_panel_canvas && !panel_live())
+            {
+                // The panel died with its map base (rebuilt on a map/world change). Drop
+                // the pointers without touching them; the rows' checkboxes and labels went
+                // with it, and poll_panel / refresh_nearest must not call into them.
+                drop_panel();
+            }
             if (!root)
             {
                 // No map base this tick. Wait for one; never fall back to the map body
@@ -6469,12 +6516,7 @@ inline bool g_wp_on = false;
                 {
                     return;
                 }
-                m_panel_canvas = nullptr;
-                m_panel_slot = nullptr;
-                m_panel_rows.clear();
-                m_panel_cats.clear();
-                m_panel_relayout = false;
-                m_panel_first_poll = true;
+                drop_panel();
             }
             auto* canvas_class =
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.CanvasPanel"));
@@ -6522,6 +6564,7 @@ inline bool g_wp_on = false;
             {
                 return;
             }
+            m_panel_canvas_idx = m_panel_canvas->GetInternalIndex();
             Engine::ParamsAddChildToCanvas add{m_panel_canvas, nullptr};
             if (!Engine::call(root, L"AddChildToCanvas", add) || !add.ReturnValue)
             {
@@ -6564,7 +6607,7 @@ inline bool g_wp_on = false;
         // (tens, not the thousands the dot pool deals with) that pooling is noise.
         auto layout_panel() -> void
         {
-            if (!m_panel_canvas || !m_panel_slot)
+            if (!panel_live() || !m_panel_slot)
             {
                 return;
             }
@@ -7244,7 +7287,7 @@ inline bool g_wp_on = false;
         // this is called after both, and again after any panel rebuild.
         auto refresh_nearest() -> void
         {
-            if (!m_have_player)
+            if (!m_have_player || !panel_live())
             {
                 return;
             }
@@ -7301,6 +7344,10 @@ inline bool g_wp_on = false;
         // Poll checkbox states; on change, update toggle + layer visibility.
         auto poll_panel() -> void
         {
+            if (!panel_live())
+            {
+                return;   // no panel this tick (map base rebuilding): nothing to read
+            }
             bool changed = false;
             int failed = 0, polled = 0;
             for (auto& row : m_panel_rows)
@@ -8182,7 +8229,8 @@ inline bool g_wp_on = false;
                 return;
             }
             m_next_exposure_tick = now + std::chrono::milliseconds(250);
-            if (now >= m_next_night_check && m_mm_pc)
+            UObject* const night_ctx = live_mm_pc();
+            if (now >= m_next_night_check && night_ctx)
             {
                 m_next_night_check = now + std::chrono::seconds(5);
                 auto* util =
@@ -8191,7 +8239,7 @@ inline bool g_wp_on = false;
                 {
                     UObject* WorldContextObject{};   // 0x00
                     bool ReturnValue{};              // 0x08
-                } q{m_mm_pc, false};
+                } q{night_ctx, false};
                 if (util && Engine::call(util, L"IsNight", q) && q.ReturnValue != m_terrain_night)
                 {
                     m_terrain_night = q.ReturnValue;
@@ -8595,9 +8643,10 @@ inline bool g_wp_on = false;
             }
             else if (g_minimap_terrain)   // opt-in live terrain capture behind the dots
             {
-                if (!m_terrain_tried && m_mm_pc && std::chrono::steady_clock::now() >= m_terrain_ready_at)
+                UObject* const terrain_pc = live_mm_pc();
+                if (!m_terrain_tried && terrain_pc && std::chrono::steady_clock::now() >= m_terrain_ready_at)
                 {
-                    init_terrain(px, py, pz, m_mm_pc);
+                    init_terrain(px, py, pz, terrain_pc);
                 }
                 else if (m_terrain_rewire && terrain_live())
                 {
@@ -9510,11 +9559,16 @@ inline bool g_wp_on = false;
             m_map_shown = map_open;   // hud_root: a hidden HUD behind the map is expected
             if (!map_open)
             {
-                // map closed: collapse our overlay once (widgets stay pooled)
+                // map closed: collapse our overlay once (widgets stay pooled). The map body
+                // may already be gone with it -- a write into a freed widget does not fault,
+                // so prove the canvas is alive first.
                 if (m_layer_canvas && !m_collapsed)
                 {
-                    Engine::ParamsSetVisibility vis{Engine::Vis_Collapsed};
-                    Engine::call(m_layer_canvas, L"SetVisibility", vis);
+                    if (slot_live(m_layer_canvas, m_layer_canvas_idx))
+                    {
+                        Engine::ParamsSetVisibility vis{Engine::Vis_Collapsed};
+                        Engine::call(m_layer_canvas, L"SetVisibility", vis);
+                    }
                     m_collapsed = true;
                 }
                 m_menu_toggle_req.store(false);   // map closed: an F5 press is a no-op, not queued
@@ -9524,11 +9578,15 @@ inline bool g_wp_on = false;
 
             // ⚠ UE4SS object identity is only stable via full names (SPEC 2.3)
             const std::wstring full_name = mask->GetFullName();
-            if (full_name != m_canvas_full_name)
+            // A new body, or our overlay died under a body that kept its name: either way
+            // the pooled dots went with it and must be rebuilt, never written to.
+            if (full_name != m_canvas_full_name ||
+                (m_layer_canvas && !slot_live(m_layer_canvas, m_layer_canvas_idx)))
             {
                 // new map body instance: old widgets died with the previous tree
                 m_canvas_full_name = full_name;
                 m_layer_canvas = nullptr;
+                m_layer_canvas_idx = -1;
                 m_layer_slot = nullptr;
                 m_dots.clear();
                 m_reveal_queue.clear();   // indices point into the pool that just died
