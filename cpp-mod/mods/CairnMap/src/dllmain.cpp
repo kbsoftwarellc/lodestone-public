@@ -1674,9 +1674,29 @@ inline bool g_wp_on = false;
         // Heartbeat: last time the per-frame EngineTick hook actually ran. On a server the
         // hook fires during the startup/menu tick then goes silent once the world is live,
         // which froze the compass empty (it is the hook's only driver). on_update watches
-        // this and re-drives the compass at ~3 Hz when the hook stalls -- the two never
-        // overlap (mutually exclusive by the staleness window).
-        std::chrono::steady_clock::time_point m_last_frame_hook{};
+        // this and re-drives the compass at ~3 Hz when the hook stalls. Written on the game
+        // thread, read on the update thread: steady_clock ticks in an atomic.
+        std::atomic<long long> m_last_frame_hook{0};
+        auto stamp_frame_hook() -> void
+        {
+            m_last_frame_hook.store(std::chrono::steady_clock::now().time_since_epoch().count(),
+                                    std::memory_order_relaxed);
+        }
+        // ONE lock over all of Lodestone's own state (dot pool, nearest set, panel, HUD
+        // caches, settings), shared by its two drivers: the game thread's per-frame HUD
+        // driver (minimap_frame) and the update thread's 300 ms map tick (tick_map). They
+        // used to run concurrently with no lock at all -- the update thread rebuilt
+        // m_nearest and grew m_dots while the game thread iterated both, and on a stalled
+        // heartbeat both ran the compass at once. Rules that keep it safe:
+        //   - the game thread only TRY-locks and skips the frame if the map tick holds it,
+        //     so it can never stall the game;
+        //   - it is taken OUTSIDE every __try function: the build is /EHsc, so an access
+        //     violation swallowed by an SEH guard does not run destructors, and a lock_guard
+        //     inside that frame would stay locked for good;
+        //   - object-array walks run BEFORE it (tick_walks_seh), never under it.
+        // Lock order: m_state_mx, then m_live_mx. Nothing takes m_state_mx while holding
+        // m_live_mx.
+        std::mutex m_state_mx;
         // SEH tripwire: counts access violations the tick_map guard swallowed. Silent in
         // the normal case; if a future teardown race faults, this surfaces it in the log
         // (from the C++ layer, since the __except scope may not hold C++ objects).
@@ -2824,6 +2844,30 @@ inline bool g_wp_on = false;
             {
                 --m_log_budget;
                 Output::send<LogLevel::Default>(STR("[Lodestone] {}\n"), msg);
+            }
+        }
+
+        // What find_map found, with each widget's object-array slot so the locked half of
+        // the tick can prove it is still alive (slot_live) before touching it.
+        struct MapFind
+        {
+            UObject* root = nullptr;
+            UObject* body_canvas = nullptr;
+            UObject* mask = nullptr;
+            int32_t root_idx = -1;
+            int32_t body_idx = -1;
+            int32_t mask_idx = -1;
+            bool open = false;
+        };
+        auto find_map_timed(MapFind& f) -> void
+        {
+            PerfMax<std::atomic<long long>> perf{m_perf_find_map_max_us};
+            f.open = find_map(f.root, f.body_canvas, f.mask);
+            if (f.open)
+            {
+                f.root_idx = f.root->GetInternalIndex();
+                f.body_idx = f.body_canvas->GetInternalIndex();
+                f.mask_idx = f.mask->GetInternalIndex();
             }
         }
 
@@ -8237,7 +8281,7 @@ inline bool g_wp_on = false;
                 // driving input + compass. Stamping at hook ENTRY (the old spot) made a
                 // fires-but-faults hook look alive forever, suppressing the fallback and
                 // freezing the compass on a server -- F7 was never consumed (Kenny).
-                m_last_frame_hook = std::chrono::steady_clock::now();
+                stamp_frame_hook();
             }
             __except (minimap_av_filter(GetExceptionCode()))
             {
@@ -8252,6 +8296,17 @@ inline bool g_wp_on = false;
             // The heartbeat (m_last_frame_hook) is stamped inside minimap_frame_seh AFTER the
             // body completes, NOT here at entry -- so a hook that fires but faults every frame
             // reads as stalled and tick_map's fallback rescues the compass (the server bug).
+            //
+            // The state lock is held for the whole frame (see m_state_mx). If the map tick has
+            // it -- placing dots on a map open, when the HUD is hidden anyway -- skip this
+            // frame rather than wait. The hook itself is healthy, so keep the heartbeat fresh:
+            // a stale one would start the update thread's fallback driver for nothing.
+            std::unique_lock<std::mutex> state(m_state_mx, std::try_to_lock);
+            if (!state.owns_lock())
+            {
+                stamp_frame_hook();
+                return;
+            }
             try
             {
                 minimap_frame_seh();
@@ -9217,7 +9272,15 @@ inline bool g_wp_on = false;
         {
             try
             {
-                tick_map_seh();
+                // Walks first, WITHOUT the state lock: they only read the object array and
+                // publish through their own small lock (scan_live_candidates) or a local
+                // (find_map). A 50-110 ms walk under the lock would make the game thread skip
+                // HUD frames. The pointers they return are re-checked with slot_live once the
+                // lock is held.
+                MapFind found{};
+                tick_walks_seh(found);
+                std::lock_guard<std::mutex> state(m_state_mx);
+                tick_map_seh(found);
             }
             catch (...)
             {
@@ -9231,11 +9294,27 @@ inline bool g_wp_on = false;
                                                 m_seh_hits);
             }
         }
-        auto tick_map_seh() -> void
+        auto tick_walks_seh(MapFind& found) -> void
         {
             __try
             {
-                tick_map();
+                // Gather live-actor candidates before anything (including the fallback
+                // driver) wants to read them.
+                scan_live_candidates();
+                find_map_timed(found);
+            }
+            __except (minimap_av_filter(GetExceptionCode()))
+            {
+                found.open = false;
+                ++m_seh_hits;
+                m_seh_new = true;
+            }
+        }
+        auto tick_map_seh(const MapFind& found) -> void
+        {
+            __try
+            {
+                tick_map(found);
             }
             __except (minimap_av_filter(GetExceptionCode()))
             {
@@ -9243,7 +9322,7 @@ inline bool g_wp_on = false;
                 m_seh_new = true;
             }
         }
-        auto tick_map() -> void
+        auto tick_map(const MapFind& found) -> void
         {
             // The per-frame EngineTick hook normally drives input + minimap + compass at
             // 30 Hz. It is the compass's ONLY driver once m_minimap_fast is set -- but on a
@@ -9254,14 +9333,13 @@ inline bool g_wp_on = false;
             // staleness window keeps the two drivers mutually exclusive: the hook stamps
             // m_last_frame_hook every frame, so a live hook keeps this branch out; a dead
             // one lets it in within ~1 s. Never m_minimap_fast (hook never installed) also
-            // routes here.
-            // Gather live-actor candidates here, off the game thread, before anything
-            // below (including the fallback driver) wants to read them.
-            scan_live_candidates();
+            // routes here. The state lock (held by our caller) also keeps the two drivers
+            // from ever overlapping, whatever the heartbeat says.
             const auto tnow = std::chrono::steady_clock::now();
+            const std::chrono::steady_clock::time_point last_hook{
+                std::chrono::steady_clock::duration{m_last_frame_hook.load(std::memory_order_relaxed)}};
             const bool hook_stalled =
-                !m_minimap_fast ||
-                (tnow - m_last_frame_hook) > std::chrono::milliseconds(1000);
+                !m_minimap_fast || (tnow - last_hook) > std::chrono::milliseconds(1000);
             if (hook_stalled)
             {
                 handle_minimap_input();
@@ -9273,14 +9351,18 @@ inline bool g_wp_on = false;
                 build_minimap();
                 tick_minimap();
             }
-            UObject* root = nullptr;
-            UObject* map_body_canvas = nullptr;
-            UObject* mask = nullptr;
-            bool map_open = false;
+            // find_map ran before the lock (tick_walks_seh); the game thread may have run a
+            // frame since, so prove the three widgets are still the ones it found.
+            if (found.open && !(slot_live(found.root, found.root_idx) &&
+                                slot_live(found.body_canvas, found.body_idx) &&
+                                slot_live(found.mask, found.mask_idx)))
             {
-                PerfMax<std::atomic<long long>> perf{m_perf_find_map_max_us};
-                map_open = find_map(root, map_body_canvas, mask);
+                return;   // torn down in between: try again next tick
             }
+            UObject* const root = found.root;
+            UObject* const map_body_canvas = found.body_canvas;
+            UObject* const mask = found.mask;
+            const bool map_open = found.open;
             if (!map_open)
             {
                 // map closed: collapse our overlay once (widgets stay pooled)
