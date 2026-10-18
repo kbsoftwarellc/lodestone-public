@@ -70,14 +70,33 @@ namespace CairnMap
     // Empty = off, and it stays empty unless settings.txt names a world -- a mod that
     // loads a save on its own is a bug to everyone except us.
     inline std::wstring g_autoload_world;
-// The ore compass is OFF until it can place an icon.
-//
-// Everything about it works except the one thing that makes it a compass: the
-// icons register, resolve to real rocks, carry vanilla's own per-ore art and the
-// right distance -- and all land stacked at dead centre instead of at their
-// bearing. Shipping that reads as a broken mod, not a beta feature, so it is
-// opt-in until the placement is solved. See docs and Mod::update_ore_compass.
-inline bool g_ore_compass = false;
+
+    // Debug=1 in settings.txt turns the periodic diagnostics back on: the compass /
+    // minimap / live-scan status lines, the per-map-open player probe, the overlay
+    // leak counter and the F4 spawner census. Off by default -- together they were
+    // over half of UE4SS.log in a normal session, and some cost a full object-array
+    // walk just to print a number. One-per-event lines (built, placed, calibrated)
+    // and every warning stay on regardless.
+    inline bool g_debug = false;
+
+    // Records the longest run of a scope into `slot` (a long long, or an atomic one
+    // when the scope runs off the game thread). Feeds the 5-minute cost summary.
+    template <typename Slot>
+    struct PerfMax
+    {
+        Slot& slot;
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        ~PerfMax()
+        {
+            const long long us =
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
+                    .count();
+            if (us > slot)
+            {
+                slot = us;
+            }
+        }
+    };
 
 // Native minimap (#26), replacing the ore compass: an always-on HUD widget we
 // build ourselves, so there is no game widget to fight for icon placement (the
@@ -361,29 +380,6 @@ inline bool g_wp_on = false;
             FName ParameterName{FName()};   // 0x00
             UObject* Value{};               // 0x08
         };
-        // USceneCaptureComponent::HideActorComponents(AActor*, bool) -- exclude an actor
-        // from THIS capture only (main view untouched). Strips pals/players/NPCs from the
-        // terrain capture so it reads as a clean map, not a top-down photo of the scene.
-        struct ParamsHideActorComponents
-        {
-            UObject* InActor{};
-            bool bIncludeFromChildActors{};
-        };
-        // USceneCaptureComponent::HideComponent(UPrimitiveComponent*) -- exclude one
-        // component (a floating WidgetComponent / billboard base icon) from the capture.
-        struct ParamsHideComponent
-        {
-            UObject* InComponent{};
-        };
-        // USceneCaptureComponent::ShowOnlyActorComponents(AActor*, bool) -- with
-        // PRM_UseShowOnlyList, adds an actor's primitive components to the render whitelist.
-        // Same layout as HideActorComponents (AActor* @0x00, bool @0x08). We whitelist the
-        // landscape/foliage/static-mesh actors so ONLY terrain renders into the capture.
-        struct ParamsShowOnlyActorComponents
-        {
-            UObject* InActor{};
-            bool bIncludeFromChildActors{};
-        };
         struct ParamsSetIsChecked
         {
             bool InIsChecked{};
@@ -405,11 +401,6 @@ inline bool g_wp_on = false;
         // UPalIndividualCharacterParameter::IsRarePal (Pal.hpp:24738): no args, returns true
         // for the golden "lucky" wild-Pal variant.
         struct ParamsIsRarePal
-        {
-            bool ReturnValue{};
-        };
-        // UPalCoopSkillSearchSystem::IsRunning (Pal.hpp:19960)
-        struct ParamsIsRunning
         {
             bool ReturnValue{};
         };
@@ -531,115 +522,6 @@ inline bool g_wp_on = false;
             FRotator_ DestRotation{};   // 0x18
             bool ReturnValue{};         // 0x30
         };
-        // UWidget::GetParent() -> UPanelWidget* (UMG.hpp:1914). Same shape as the
-        // pawn getter: one pointer return, no arguments.
-        struct ParamsGetParent
-        {
-            UObject* ReturnValue{};
-        };
-        // UCanvasPanelSlot::LayoutData (FAnchorData @0x38, UMG.hpp). Read directly
-        // rather than through GetPosition(), because a property read cannot be
-        // rejected the way a call can, and this runs on a widget we do not own.
-        //
-        // FMargin is FLOAT (0x10 = 4 floats) while FAnchors/FVector2D are DOUBLE
-        // (0x20 = 4 doubles, 0x10 = 2 doubles) -- UE5 LWC widened the vectors but not
-        // the margin. Mixing those up silently shifts every field after it.
-        struct FMargin_
-        {
-            float Left{}, Top{}, Right{}, Bottom{};
-        };
-        struct FAnchors_
-        {
-            double MinX{}, MinY{}, MaxX{}, MaxY{};
-        };
-        struct FAnchorData_
-        {
-            FMargin_ Offsets{};
-            FAnchors_ Anchors{};
-            double AlignX{}, AlignY{};
-        };
-        // UWidget::RenderTransform (FWidgetTransform @0x98, UMG.hpp:1848). The canvas
-        // slot puts every compass icon at the same pos(0,0) anchor(0.5,0), so THIS is
-        // what actually moves an icon along the compass -- the slot never does.
-        struct FWidgetTransform_
-        {
-            double TransX{}, TransY{};
-            double ScaleX{}, ScaleY{};
-            double ShearX{}, ShearY{};
-            float Angle{};
-        };
-        static_assert(sizeof(FMargin_) == 0x10);
-        static_assert(sizeof(FAnchors_) == 0x20);
-        static_assert(sizeof(FAnchorData_) == 0x40);
-        // The TArray header, to read RegisteredLocationIds.Num() without marshalling
-        // the elements. Reading Num across the call is what makes the experiment
-        // self-reporting: it says whether the register ACCEPTED our parameter,
-        // separately from whether anything drew.
-        struct FArrayHeader_
-        {
-            void* Data{};
-            int32_t Num{};
-            int32_t Max{};
-        };
-
-        struct FGuid_
-        {
-            uint32_t A{}, B{}, C{}, D{};
-        };
-        // APalPlayerController::GetPlayerUId (Pal.hpp:13046)
-        struct ParamsGetPlayerUId
-        {
-            FGuid_ ReturnValue{};
-        };
-        // UPalLocationManager::GetLocationPoint(const FGuid& ID) -> UPalLocationPoint*
-        // Offsets verified at runtime before the call, as always.
-        struct ParamsGetLocationPoint
-        {
-            FGuid_ ID{};
-            UObject* ReturnValue{};
-        };
-        // UPalCoopSkillSearchBase::Start(const FVector& Origin, int32 Rank,
-        // const FGuid& RequestPlayerUId). FGuid is four uint32 -> 4-byte aligned, so it
-        // packs at 0x1C right behind the int32, NOT at 0x20. That exact assumption cost
-        // a silent frame corruption on SearchMapObjects; offsets are checked at runtime
-        // before the call regardless.
-        struct ParamsStart
-        {
-            FVector_ Origin{};
-            int32_t Rank{};
-            FGuid_ RequestPlayerUId{};
-        };
-        // FPalCoopSkillSearchResultParameter (Pal.hpp:1967, size 0x78). Laid out by
-        // hand because ProcessEvent copies this struct into the param frame verbatim
-        // -- every offset below is from the dump, and the padding is load-bearing.
-        struct FPalCoopSkillSearchResultParameter_
-        {
-            uint8_t SearchType{};           // 0x00  EPalCoopSkillSearchType
-            uint8_t pad0_[7]{};             // 0x01
-            FVector_ Location{};            // 0x08  (0x18)
-            FGuid_ InstanceId{};            // 0x20
-            uint8_t RelicType{};            // 0x30  EPalRelicType
-            uint8_t pad1_[7]{};             // 0x31
-            uint8_t IndividualId[0x30]{};   // 0x38  FPalInstanceID (zeroed = empty)
-            FGuid_ RequestPlayerUId{};      // 0x68
-        };
-        static_assert(sizeof(FPalCoopSkillSearchResultParameter_) == 0x78,
-                      "FPalCoopSkillSearchResultParameter must match the dump exactly (Pal.hpp:1976)");
-        static_assert(offsetof(FPalCoopSkillSearchResultParameter_, Location) == 0x08);
-        static_assert(offsetof(FPalCoopSkillSearchResultParameter_, InstanceId) == 0x20);
-        static_assert(offsetof(FPalCoopSkillSearchResultParameter_, IndividualId) == 0x38);
-        static_assert(offsetof(FPalCoopSkillSearchResultParameter_, RequestPlayerUId) == 0x68);
-        struct ParamsRegisterToCompass
-        {
-            FPalCoopSkillSearchResultParameter_ ResultParameter{};
-        };
-        // UPalCoopSkillSearchSystem::CreateSearchObject (Pal.hpp:19962).
-        // TSubclassOf<T> is a UClass* in the param frame.
-        struct ParamsCreateSearchObject
-        {
-            UObject* SearchClass{};
-            UObject* ReturnValue{};
-        };
         // UPalGameInstance::SelectWorldSaveDirectoryName (Pal.hpp:22352) -- the same
         // call the title menu makes when you click a world.
         struct ParamsSelectWorldSaveDirectoryName
@@ -658,29 +540,6 @@ inline bool g_wp_on = false;
             uint8_t pad0_[7]{};              // 0x11
             FString Options{};               // 0x18
         };
-        // UPalCoopSkillSearchMapObject::SearchMapObjects (Pal.hpp:19949):
-        //   (const TArray<FName>&, const FVector&, float, const FGuid&)
-        // Reference params are still passed BY VALUE in the ProcessEvent frame, so
-        // this is the four values laid end to end. The offsets are ASSUMED from UE's
-        // alignment rules and CHECKED against the UFunction's own properties before
-        // the call -- see search_params_ok. A wrong frame here would corrupt
-        // memory rather than fail, so it is not something to find out by trying.
-        struct ParamsSearchMapObjects
-        {
-            FArrayHeader_ SearchMapObjIds{};   // 0x00  TArray<FName>
-            FVector_ Origin{};                 // 0x10
-            float SearchRadius{};              // 0x28
-            FGuid_ RequestPlayerUId{};         // 0x2C -- measured, NOT 0x30
-        };
-        // 0x2C, not the 0x30 I assumed. FGuid is four uint32 so it aligns to 4 and
-        // packs straight after the float with no padding; I had assumed 8-byte
-        // alignment. The runtime check caught it and skipped the call -- had it been
-        // trusted, ProcessEvent would have written the GUID four bytes past where the
-        // engine reads it, corrupting the frame instead of failing. Offsets below are
-        // the ones the UFunction itself reported.
-        static_assert(offsetof(ParamsSearchMapObjects, Origin) == 0x10);
-        static_assert(offsetof(ParamsSearchMapObjects, SearchRadius) == 0x28);
-        static_assert(offsetof(ParamsSearchMapObjects, RequestPlayerUId) == 0x2C);
 
         enum : uint8_t
         {
@@ -762,23 +621,6 @@ inline bool g_wp_on = false;
                 }
             }
             return nullptr;
-        }
-
-        // Count descendants whose name starts with `prefix` (StaticConstructObject may
-        // suffix "_1" when a swept name is still held pending GC, so prefix not exact).
-        inline auto count_descendants_prefix(UObject* w, const std::wstring& prefix, int depth = 0) -> int
-        {
-            if (!w || depth > 24)   // map body -> WidgetTree -> ... -> our canvas is deep
-            {
-                return 0;
-            }
-            int c = widget_name(w).starts_with(prefix) ? 1 : 0;
-            const int32_t n = children_count(w);
-            for (int32_t i = 0; i < n; ++i)
-            {
-                c += count_descendants_prefix(child_at(w, i), prefix, depth + 1);
-            }
-            return c;
         }
 
         // Canvas slot offsets: LayoutData.Offsets (FMargin, 4 floats) leads the struct.
@@ -1581,10 +1423,6 @@ inline bool g_wp_on = false;
         static auto is_pal_pick_id(int id) -> bool { return id >= kPalPagePrev && id < kRelicAll; }
         static auto is_relic_pick_id(int id) -> bool { return id >= kRelicAll && id < 22000; }
         static auto is_menu_ctrl_id(int id) -> bool { return id >= 22000 && id < 23000; }
-        static auto is_any_pick_id(int id) -> bool
-        {
-            return is_pal_pick_id(id) || is_relic_pick_id(id) || is_menu_ctrl_id(id);
-        }
         // Dynamic label for the EFFIGIES toggle row ("Effigies: <type>"); member so its
         // c_str() outlives the panel build, like m_pal_label.
         std::wstring m_relic_label = L"Effigies";
@@ -1697,8 +1535,6 @@ inline bool g_wp_on = false;
         bool m_terrain_tried = false;                // init attempted (once, or after a failure)
         double m_terrain_ortho = 0.0;                // last OrthoWidth pushed (to react to zoom)
         int m_terrain_rot_log = 0;                    // one-shot: log the capture's actual look direction
-        int m_capture_clean_idx = 0;                 // round-robin slot for clean_terrain_capture
-        std::chrono::steady_clock::time_point m_next_capture_clean{};  // throttle the hide-sweep
         bool m_you_arrowed = false;                  // arrow texture applied yet?
         std::vector<UObject*> m_minimap_dots;        // pooled layer dots on the minimap
         std::vector<UObject*> m_minimap_dot_slots;   // their canvas slots (for repositioning)
@@ -1754,6 +1590,16 @@ inline bool g_wp_on = false;
         double m_auto_zoom = 1.0;   // smoothed range multiplier (>= 1)
         // Perf instrument: max build_minimap / tick_minimap cost over a ~5 s window.
         long long m_mm_build_max = 0, m_mm_tick_max = 0;
+        // Cost summary: the worst single call of each kind in a 5-minute window, logged
+        // as ONE line (always on). A hitch is a worst case, not an average, so these are
+        // maxima. Frame/live/HUD run on the game thread; the map tick and its find_map
+        // run on UE4SS's update thread, hence atomic.
+        long long m_perf_frame_max_us = 0;   // whole per-frame HUD driver
+        long long m_perf_live_max_us = 0;    // one live-actor scan (refresh_live_nearest)
+        long long m_perf_hud_max_us = 0;     // one HUD-root walk (hud_root)
+        std::atomic<long long> m_perf_tick_max_us{0};       // whole 300 ms map tick
+        std::atomic<long long> m_perf_find_map_max_us{0};   // its find_map alone
+        std::chrono::steady_clock::time_point m_perf_next_log{};
         std::chrono::steady_clock::time_point m_mm_next_log{};
         std::chrono::steady_clock::time_point m_mm_dbg_at{};   // throttle for the dot-count diag
         // Cached player controller for the minimap -- resolving it is a ~20 ms object-
@@ -1789,8 +1635,6 @@ inline bool g_wp_on = false;
         std::chrono::steady_clock::time_point m_next_compass_scan{};       // HUD FindAllOf throttle
         std::chrono::steady_clock::time_point m_next_compass_recompute{};  // nearest-per-layer throttle
         std::chrono::steady_clock::time_point m_next_compass_dbg{};        // rate-limit the why-empty log
-        double m_compass_last_px = 0, m_compass_last_py = 0, m_compass_last_yaw = 0;
-        bool m_compass_have_last = false;
         std::atomic<bool> m_compass_toggle_req{false};   // F7
         std::atomic<bool> m_census_req{false};           // F4 -- spawner-table census (dev)
         std::atomic<bool> m_menu_toggle_req{false};      // F5 -- toggle the config popup (map-only)
@@ -1825,22 +1669,6 @@ inline bool g_wp_on = false;
         std::chrono::steady_clock::time_point m_next_live_scan{};
         bool m_lucky_in_range = false;   // lucky range-alert latch (fires once per approach)
         bool m_have_player = false;
-        // Registered compass markers expire after LocationDisplayTimeSec = 60 (read
-        // off the register itself), so they must be re-registered inside that window
-        // or the compass empties while you are walking towards the rock. 45s leaves
-        // room for a slow frame without ever showing a gap.
-        static constexpr int kCompassRefreshSec = 45;
-        static constexpr double kCompassRangeUU = 30000.0;   // = the widgets' HiddenDistance
-        static constexpr size_t kCompassMaxIcons = 10;
-        // 1 m. A rock sits on its spawner: the calibration measured 7/7 copper at a
-        // worst of 0.7u, so this is three orders of magnitude of slack, and still far
-        // tighter than the gap between two distinct nodes.
-        static constexpr double kLayerMatchUU = 100.0;
-        std::chrono::steady_clock::time_point m_next_compass{};
-        bool m_probed_icons = false;
-        bool m_selftest_done = false;
-        size_t m_last_compass_count = SIZE_MAX;
-        int32_t m_last_compass_hits = -1;
         static constexpr double kDistCol = 62.0;      // px reserved for "1.2km SW"
         static constexpr double kPanelMargin = 12.0;  // inset from the screen corner
 
@@ -2043,13 +1871,6 @@ inline bool g_wp_on = false;
                     ++cats;
                 }
             }
-            // Dev autoload. Read from `raw` (not `saved`) because the value is a save
-            // directory name, not a flag -- `saved` would reduce "AF5D9C15..." to
-            // whether it happens to contain a '1'.
-            if (auto it = raw.find(L"OreCompass"); it != raw.end())
-            {
-                g_ore_compass = (it->second == L"1");
-            }
             if (auto it = raw.find(L"Minimap"); it != raw.end())
             {
                 g_minimap = (it->second == L"1");
@@ -2114,6 +1935,13 @@ inline bool g_wp_on = false;
                 case L'R': g_minimap_ax = 1.0; break;
                 }
             }
+            if (auto it = raw.find(L"Debug"); it != raw.end())
+            {
+                g_debug = (it->second == L"1");
+            }
+            // Dev autoload. Read from `raw` (not `saved`) because the value is a save
+            // directory name, not a flag -- `saved` would reduce "AF5D9C15..." to
+            // whether it happens to contain a '1'.
             if (auto it = raw.find(L"AutoLoadWorld"); it != raw.end() && !it->second.empty())
             {
                 g_autoload_world = it->second;
@@ -2161,10 +1989,10 @@ inline bool g_wp_on = false;
                 f << L"AutoLoadWorld=" << g_autoload_world << L"\n";
             }
             f << L"#\n";
-            f << L"# EXPERIMENTAL: put nearby ore on the in-game compass (1 = on).\n";
-            f << L"# Known broken: the icons appear stacked in the middle of the compass\n";
-            f << L"# instead of at the direction of the rock. Off until that is fixed.\n";
-            f << L"OreCompass=" << (g_ore_compass ? 1 : 0) << L"\n";
+            f << L"# Debug = 1 writes periodic status lines to UE4SS.log (compass, minimap,\n";
+            f << L"# live scans, player position on map open) and enables the F4 spawner\n";
+            f << L"# census. Leave 0 unless you are chasing a bug. Restart to apply.\n";
+            f << L"Debug=" << (g_debug ? 1 : 0) << L"\n";
             f << L"#\n";
             f << L"# Always-on minimap on the HUD (1 = on). Shows your on-layers as dots\n";
             f << L"# around you, north-up, ~300 m radius. Toggle in-game with F8.\n";
@@ -2395,15 +2223,6 @@ inline bool g_wp_on = false;
             }
             m_eff_found = ef;
             m_note_found = nf;
-        }
-
-        // Categories start COLLAPSED (2026-07-19): the config menu can be taller than the
-        // screen with several open, and there is no scroll, so the menu opens compact and
-        // expands one category at a time (accordion, see poll_categories).
-        auto is_cat_open(const std::wstring& label) const -> bool
-        {
-            auto it = m_cat_open.find(label);
-            return it == m_cat_open.end() ? false : it->second;
         }
 
         // A panel entry: the title banner, a category header, or a toggle row.
@@ -2682,7 +2501,6 @@ inline bool g_wp_on = false;
         std::wstring m_last_vis_log = L"<unset>";   // log layer visibility on change, not on a budget
         int m_poll_log_budget = 8;
         bool m_logged_poll = false;
-        bool m_logged_census = false;
         bool m_flag_probe_done = false;
 
       public:
@@ -2722,9 +2540,14 @@ inline bool g_wp_on = false;
                 register_keydown_event(Input::Key::F7, no_mods,
                                        [this]() { m_compass_toggle_req.store(true); });  // compass strip
                 // F4: one-shot census of the spawner DataTables (Pal species + NPC
-                // placements). Dev instrument -- logs to UE4SS.log, draws nothing.
-                register_keydown_event(Input::Key::F4, no_mods,
-                                       [this]() { m_census_req.store(true); });
+                // placements). Dev instrument -- logs to UE4SS.log, draws nothing, so the
+                // key is only bound with Debug=1 (settings are already loaded: see
+                // seed_layer_defaults above).
+                if (g_debug)
+                {
+                    register_keydown_event(Input::Key::F4, no_mods,
+                                           [this]() { m_census_req.store(true); });
+                }
                 // F5: toggle the config popup while the world map is open. Input thread --
                 // only touch the atomic; the game thread acts on it (see tick_map).
                 register_keydown_event(Input::Key::F5, no_mods,
@@ -3595,45 +3418,6 @@ inline bool g_wp_on = false;
                                             g_autoload_world);
         }
 
-        auto census_locations() -> void
-        {
-            static constexpr const wchar_t* kPointClasses[] = {
-                L"PalLocationPointFastTravel",     // Fast Travel
-                L"PalLocationPointDungeonPortal",  // Dungeon
-                L"PalLocationPoint_BossTower",     // Syndicate Tower
-                L"PalLocationPoint_StandaloneBoss",// Sealed Realm
-                L"PalLocationPoint_Supply",        // supply drops
-                L"PalLocationPoint_TreasureMapPoint",
-            };
-            for (const wchar_t* cls : kPointClasses)
-            {
-                std::vector<UObject*> objs;
-                UObjectGlobals::FindAllOf(cls, objs);
-                int unlocked = 0, located = 0;
-                for (auto* o : objs)
-                {
-                    if (!o)
-                    {
-                        continue;
-                    }
-                    Engine::ParamsIsUnlockMapPoint u{};
-                    if (Engine::call(o, L"IsUnlockMapPoint", u) && u.ReturnValue)
-                    {
-                        ++unlocked;
-                    }
-                    Engine::ParamsGetLocation g{};
-                    if (Engine::call(o, L"GetLocation", g) &&
-                        (g.ReturnValue.X != 0.0 || g.ReturnValue.Y != 0.0))
-                    {
-                        ++located;
-                    }
-                }
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] POI census: {:<34} {:>4} instances, {:>4} with a location, {:>4} unlocked\n"),
-                    cls, objs.size(), located, unlocked);
-            }
-        }
-
         // Fetch the two live spawner DataTables the game already deserialized. The
         // Get*DataTable accessors live on UPalMasterDataTablesUtility (a
         // BlueprintFunctionLibrary), NOT UPalUtility -- calling the wrong CDO makes
@@ -3979,6 +3763,8 @@ inline bool g_wp_on = false;
             m_next_live_scan =
                 now + std::chrono::milliseconds(std::max<long long>(200, static_cast<long long>(
                                                                              g_compass_live_sec * 1000.0 / 3.0)));
+            // From here on this call does real work (a player lookup, then one scan).
+            PerfMax<long long> perf{m_perf_live_max_us};
             double px = 0, py = 0, pz = 0;
             if (!player_pos(px, py, pz))
             {
@@ -4079,14 +3865,19 @@ inline bool g_wp_on = false;
                         m_lucky_in_range = false;
                     }
                 }
-                // One summary per full cycle (on the lucky slot) so the refresh is visible w/o spam.
-                auto dm = [this](int l) {
-                    auto it = m_live_nearest.find(l);
-                    return (it != m_live_nearest.end() && it->second.valid) ? it->second.dist / 100.0 : -1.0;
-                };
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] live nearest (no map): egg={:.0f}m dungeon={:.0f}m schematic={:.0f}m lucky={:.0f}m\n"),
-                    dm(kEggLayer), dm(kDungeonLayer), dm(kSchematicLayer), dm(kLuckyLayer));
+                // One summary per full cycle (on the lucky slot), Debug-only: at the default
+                // CompassLiveSec that is a line every ~8 s for the whole session.
+                if (g_debug)
+                {
+                    auto dm = [this](int l) {
+                        auto it = m_live_nearest.find(l);
+                        return (it != m_live_nearest.end() && it->second.valid) ? it->second.dist / 100.0 : -1.0;
+                    };
+                    Output::send<LogLevel::Default>(
+                        STR("[Lodestone] live nearest (no map): egg={:.0f}m dungeon={:.0f}m schematic={:.0f}m "
+                            "lucky={:.0f}m\n"),
+                        dm(kEggLayer), dm(kDungeonLayer), dm(kSchematicLayer), dm(kLuckyLayer));
+                }
             }
         }
 
@@ -4752,6 +4543,9 @@ inline bool g_wp_on = false;
         // any formula for it is a guess. Reading the player's real world position
         // turns that guess into a measurement, and doubles as the groundwork for the
         // nearest-readout and compass work.
+        //
+        // The log lines are Debug-only; the nearest recompute and the panel refresh
+        // below are not -- they are what keeps the distance column current on a reopen.
         auto log_player_context() -> void
         {
             double px = 0, py = 0, pz = 0;
@@ -4760,40 +4554,38 @@ inline bool g_wp_on = false;
                 Output::send<LogLevel::Warning>(STR("[Lodestone] player probe: no player position\n"));
                 return;
             }
-            Output::send<LogLevel::Default>(STR("[Lodestone] player at world ({:.0f}, {:.0f}, {:.0f})\n"), px, py,
-                                            pz);
             compute_nearest(px, py);
-            // Log the closest few, closest layer first: whatever you are standing on
-            // should be at the top with a small distance. This is the panel readout's
-            // own check -- if a row disagrees with this line, the panel is wrong.
-            // Do NOT name this `near`: <Windows.h> still defines near/far as empty
-            // macros (the 16-bit segment keywords), so `near.emplace_back(...)`
-            // silently becomes `.emplace_back(...)` and MSVC blames std::sort.
-            // Same family as the NOMINMAX trap.
-            std::vector<std::pair<double, int>> closest;
-            closest.reserve(m_nearest.size());
-            for (const auto& [id, n] : m_nearest)
+            if (g_debug)
             {
-                closest.emplace_back(n.dist_uu, id);
-            }
-            std::sort(closest.begin(), closest.end(),
-                      [](const auto& a, const auto& b) { return a.first < b.first; });
-            for (size_t i = 0; i < closest.size() && i < 6; ++i)
-            {
-                Output::send<LogLevel::Default>(STR("[Lodestone]   nearest {:<12} {:>9.0f}u {}\n"),
-                                                layer_key(closest[i].second), closest[i].first,
-                                                compass_8(m_nearest[closest[i].second].bearing_deg));
+                Output::send<LogLevel::Default>(STR("[Lodestone] player at world ({:.0f}, {:.0f}, {:.0f})\n"), px,
+                                                py, pz);
+                // Log the closest few, closest layer first: whatever you are standing on
+                // should be at the top with a small distance. This is the panel readout's
+                // own check -- if a row disagrees with this line, the panel is wrong.
+                // Do NOT name this `near`: <Windows.h> still defines near/far as empty
+                // macros (the 16-bit segment keywords), so `near.emplace_back(...)`
+                // silently becomes `.emplace_back(...)` and MSVC blames std::sort.
+                // Same family as the NOMINMAX trap.
+                std::vector<std::pair<double, int>> closest;
+                closest.reserve(m_nearest.size());
+                for (const auto& [id, n] : m_nearest)
+                {
+                    closest.emplace_back(n.dist_uu, id);
+                }
+                std::sort(closest.begin(), closest.end(),
+                          [](const auto& a, const auto& b) { return a.first < b.first; });
+                for (size_t i = 0; i < closest.size() && i < 6; ++i)
+                {
+                    Output::send<LogLevel::Default>(STR("[Lodestone]   nearest {:<12} {:>9.0f}u {}\n"),
+                                                    layer_key(closest[i].second), closest[i].first,
+                                                    compass_8(m_nearest[closest[i].second].bearing_deg));
+                }
             }
             // On a reopen the panel already exists and is not rebuilt, so nothing else
             // would push the new numbers into it. (On the first open the rows do not
             // exist yet and this is a no-op; layout_panel refreshes once it builds
             // them.)
             refresh_nearest();
-            if (g_ore_compass)
-            {
-                update_ore_compass(px, py, pz);
-                m_next_compass = std::chrono::steady_clock::now() + std::chrono::seconds(kCompassRefreshSec);
-            }
         }
 
         // The nearest UNCOLLECTED, currently-placed node of every layer.
@@ -4884,53 +4676,6 @@ inline bool g_wp_on = false;
             return buf;
         }
 
-        // ProcessEvent copies our param struct into the frame RAW: if our offsets are
-        // wrong it corrupts the frame instead of failing, so a mismatch must SKIP the
-        // call rather than risk it. This is not paranoia -- it caught RequestPlayerUId
-        // sitting at 0x2C, not the 0x30 I had assumed (FGuid is four uint32, so it
-        // aligns to 4 and packs straight after the float).
-        //
-        // Checked once: the layout is a property of the build, not of the call.
-        static auto search_params_ok(UObject* searcher) -> bool
-        {
-            static int cached = -1;   // -1 unknown, 0 bad, 1 good
-            if (cached >= 0)
-            {
-                return cached == 1;
-            }
-            UFunction* fn = searcher->GetFunctionByNameInChain(FName(STR("SearchMapObjects"), FNAME_Find));
-            if (!fn)
-            {
-                Output::send<LogLevel::Warning>(STR("[Lodestone] compass: SearchMapObjects not found\n"));
-                cached = 0;
-                return false;
-            }
-            bool ok = true;
-            for (FProperty* p : fn->ForEachProperty())
-            {
-                const auto name = p->GetName();
-                const int32_t off = p->GetOffset_Internal();
-                int32_t want = -1;
-                if (name == STR("SearchMapObjIds")) want = 0x00;
-                else if (name == STR("Origin")) want = 0x10;
-                else if (name == STR("SearchRadius")) want = 0x28;
-                else if (name == STR("RequestPlayerUId")) want = 0x2C;
-                if (want >= 0 && off != want)
-                {
-                    ok = false;
-                    Output::send<LogLevel::Warning>(
-                        STR("[Lodestone] compass: param {} @ {:#04x}, expected {:#04x}  <-- MISMATCH\n"), name,
-                        off, want);
-                }
-            }
-            if (!ok)
-            {
-                Output::send<LogLevel::Warning>(STR("[Lodestone] compass: param layout mismatch, NOT calling\n"));
-            }
-            cached = ok ? 1 : 0;
-            return ok;
-        }
-
         // The PalPlayerController. Deliberately NOT cached across frames: a stale
         // pointer to a freed controller access-violates on world teardown (the crash on
         // leaving a server), whereas FindFirstOf just returns null there and the minimap
@@ -4956,29 +4701,6 @@ inline bool g_wp_on = false;
                 return false;
             }
             return Engine::actor_location(gp.ReturnValue, px, py, pz);
-        }
-
-        // Player facing (world yaw degrees), for the minimap's heading arrow. Same
-        // pawn as player_pos, one extra reflected call.
-        auto player_yaw(double& yaw) -> bool
-        {
-            UObject* pc = player_controller();
-            if (!pc)
-            {
-                return false;
-            }
-            Engine::ParamsGetPawn gp{};
-            if (!Engine::call(pc, L"K2_GetPawn", gp) || !gp.ReturnValue)
-            {
-                return false;
-            }
-            Engine::ParamsGetActorRotation gr{};
-            if (!Engine::call(gp.ReturnValue, L"K2_GetActorRotation", gr))
-            {
-                return false;
-            }
-            yaw = gr.ReturnValue.Yaw;
-            return true;
         }
 
         // No pawn resolvable (title, loading, or a full world teardown). Belt-and-
@@ -5100,539 +4822,6 @@ inline bool g_wp_on = false;
             return true;
         }
 
-        // The compass is for walking, and you walk with the map CLOSED -- which is
-        // precisely where tick() gives up and returns. So this runs above that
-        // early-out, on its own clock, and is the one part of the mod that does work
-        // while the map is not on screen.
-        auto tick_compass() -> void
-        {
-            if (!g_ore_compass)
-            {
-                return;
-            }
-            const auto now = std::chrono::steady_clock::now();
-            if (now < m_next_compass)
-            {
-                return;
-            }
-            double px = 0, py = 0, pz = 0;
-            if (!player_pos(px, py, pz))
-            {
-                return;   // title or loading; leave the timer armed so we retry
-            }
-            m_next_compass = now + std::chrono::seconds(kCompassRefreshSec);
-            update_ore_compass(px, py, pz);
-        }
-
-        // Which layer owns the rock at this spot?
-        //
-        // The compass's search results name no map object -- FPalCoopSkillSearchResultParameter
-        // carries a Location and an InstanceId, not the DamagableRock id -- so the id
-        // cannot be recovered from a hit. It does not need to be. A rock spawns exactly
-        // on its spawner, which is the coordinate our tables already hold: the
-        // calibration measured that agreement at 0.7u over 7/7 copper. So the position
-        // IS the identity, and matching it live means no id->ore table to maintain, get
-        // wrong, or re-derive when Pocketpair renumbers a rock.
-        //
-        // Returns -1 for a rock we have no layer for (pal crystal, plain stone), which
-        // is the correct answer for those, not a failure.
-        static auto layer_at(double x, double y) -> int
-        {
-            int best = -1;
-            double best_d2 = kLayerMatchUU * kLayerMatchUU;
-            for (size_t li = 0; li < std::size(Data::kLayers); ++li)
-            {
-                const auto& layer = Data::kLayers[li];
-                for (size_t pi = 0; pi < layer.count; ++pi)
-                {
-                    const double dx = static_cast<double>(layer.points[pi].x) - x;
-                    const double dy = static_cast<double>(layer.points[pi].y) - y;
-                    const double d2 = dx * dx + dy * dy;
-                    if (d2 < best_d2)
-                    {
-                        best_d2 = d2;
-                        best = static_cast<int>(li);
-                    }
-                }
-            }
-            return best;
-        }
-
-        // What does the compass widget think it is pointing at?
-        //
-        // The icon draws with the right ART (vanilla's copper nugget) but reads 999m,
-        // its 3-digit clamp, and sits nowhere near the real rock 90m west. So the id
-        // resolves far enough to pick an icon, and the POSITION still comes out wrong.
-        // Everything past that point is native and unreflected -- the dump cannot show
-        // why -- so the only way to tell a bad Target Location from a bad LocationID
-        // lookup is to read both off the widget and compare against the truth.
-        //
-        // Runs before the search, so it reports the state the LAST registration
-        // produced rather than one we have not made yet.
-        static constexpr const wchar_t* kVisNames[] = {L"Visible", L"Collapsed", L"Hidden", L"HitTestInvis",
-                                                       L"SelfHitTestInvis"};
-
-
-        // Where is this widget actually placed on its canvas?
-        //
-        // The last unmeasured thing. Every other property says our icons should draw:
-        // right target, right distance, SelfHitTestInvisible, adopted by the same
-        // IconCanvas the fast-travel icons use, and listed in VisibleIconIds. If the
-        // slot offset is off-canvas or NaN, that closes it -- and comparing against a
-        // fast-travel icon, which demonstrably draws, gives the number a meaning.
-        static auto slot_desc(UObject* w) -> std::wstring
-        {
-            auto** slot = w ? w->GetValuePtrByPropertyNameInChain<UObject*>(STR("Slot")) : nullptr;
-            if (!slot || !*slot)
-            {
-                return L"<no slot>";
-            }
-            auto* ld = (*slot)->GetValuePtrByPropertyNameInChain<Engine::FAnchorData_>(STR("LayoutData"));
-            if (!ld)
-            {
-                return L"<no LayoutData>";
-            }
-            auto* rt = w->GetValuePtrByPropertyNameInChain<Engine::FWidgetTransform_>(STR("RenderTransform"));
-            wchar_t buf[200];
-            std::swprintf(buf, std::size(buf), L"pos(%.0f,%.0f) anchor(%.2f,%.2f) render(%.0f,%.0f) scale(%.2f)",
-                          ld->Offsets.Left, ld->Offsets.Top, ld->Anchors.MinX, ld->Anchors.MinY,
-                          rt ? rt->TransX : -99999.0, rt ? rt->TransY : -99999.0, rt ? rt->ScaleX : -1.0);
-            return buf;
-        }
-
-        auto probe_compass_icons(double px, double py, double pz) -> void
-        {
-            std::vector<UObject*> ws;
-            UObjectGlobals::FindAllOf(STR("WBP_CompassIcon_ForMapObject_C"), ws);
-            if (ws.empty())
-            {
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] icon probe: 0 ForMapObject widgets (nothing registered, or the "
-                        "compass built a different class)\n"));
-                return;
-            }
-            Output::send<LogLevel::Default>(STR("[Lodestone] icon probe: {} widgets; player ({:.0f}, {:.0f})\n"),
-                                            ws.size(), px, py);
-            for (size_t i = 0; i < ws.size() && i < 10; ++i)
-            {
-                auto* tl = ws[i]->GetValuePtrByPropertyNameInChain<Engine::FVector_>(STR("Target Location"));
-                auto* cd = ws[i]->GetValuePtrByPropertyNameInChain<double>(STR("CurrentDistance"));
-                auto* hd = ws[i]->GetValuePtrByPropertyNameInChain<float>(STR("HiddenDistance"));
-                auto* lid = ws[i]->GetValuePtrByPropertyNameInChain<Engine::FGuid_>(STR("MyLocationID"));
-                const double real = tl ? std::sqrt((tl->X - px) * (tl->X - px) + (tl->Y - py) * (tl->Y - py))
-                                       : -1.0;
-                // "The widget exists with the right target" and "the widget draws" are
-                // different claims, and the first one is now proven while the icons are
-                // still not on screen. Visibility separates them; a parent of <none>
-                // would say the compass built the widget but never adopted it, which
-                // needs a different fix entirely.
-                auto* vis = ws[i]->GetValuePtrByPropertyNameInChain<uint8_t>(STR("Visibility"));
-                Engine::ParamsGetParent gp{};
-                const bool got_parent = Engine::call(ws[i], L"GetParent", gp);
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] icon probe:   [{}] target ({:.0f}, {:.0f}, {:.0f}) = {:.0f}u away | "
-                        "CurrentDistance={:.0f} | Hidden={} | vis={} | slot {} | id "
-                        "{:08X}-{:08X}-{:08X}-{:08X}\n"),
-                    i, tl ? tl->X : 0.0, tl ? tl->Y : 0.0, tl ? tl->Z : 0.0, real, cd ? *cd : -1.0,
-                    hd ? *hd : -1.0f, (vis && *vis <= 4) ? kVisNames[*vis] : STR("<unreadable>"),
-                    slot_desc(ws[i]), lid ? lid->A : 0u, lid ? lid->B : 0u, lid ? lid->C : 0u,
-                    lid ? lid->D : 0u);
-                (void)got_parent;
-                (void)gp;
-            }
-            // The differential that matters: fast-travel icons DEMONSTRABLY draw --
-            // the P3a probe caught 3 of them SelfHitTestInvisible, which is what a
-            // rendering compass icon looks like. Ours report the same visibility, the
-            // same HiddenDistance and correct targets, and still do not appear. So the
-            // difference is not in the widget; it is in WHERE the widget hangs.
-            //
-            // The census found TWO WBP_Ingame_Compass_C. If the register adopts our
-            // icons into the other one -- an offscreen or inactive compass -- every
-            // property we have read would look perfect and nothing would ever draw.
-            // Comparing our parent's FULL name against a known-drawing icon's parent
-            // is what tells those apart; GetName() says "IconCanvas" for both.
-            // A reference that is DEFINITELY on screen.
-            //
-            // Comparing against a fast-travel icon proves nothing: it reports the same
-            // visibility and slot as ours, but I cannot point at one on the screen, so
-            // "identical to FT" is consistent with both of them being invisible. The
-            // death mark IS visible -- the red X reading 378m -- and it derives from the
-            // same WBP_CompassIconBase_C, so its RenderTransform is the number ours has
-            // to look like.
-
-            // Does the LOCATION MANAGER know our ids?
-            //
-            // The icons draw with the right art, at the right distance, and stacked at
-            // the compass centre: render(0,0) on all seven, while the death mark -- the
-            // red X I can see -- carries render(354,0). Seven rocks at seven bearings
-            // cannot all be dead centre, so the offset is never computed for ours.
-            //
-            // The split that would explain it: the register's OnAddedLocationForCompass
-            // delegate is what CREATES an icon, but the per-frame positioning walks
-            // UPalLocationManager. If our ids never landed in the manager's LocationMap,
-            // the compass would build a perfect icon it can never place -- which is
-            // exactly what is on screen. GetLocationPoint is reflected, so just ask it.
-            if (auto* lm = UObjectGlobals::FindFirstOf(STR("PalLocationManager")))
-            {
-                UFunction* fn = lm->GetFunctionByNameInChain(FName(STR("GetLocationPoint"), FNAME_Find));
-                bool ok = fn != nullptr;
-                if (fn)
-                {
-                    for (FProperty* pr : fn->ForEachProperty())
-                    {
-                        const auto nm = pr->GetName();
-                        const int32_t off = pr->GetOffset_Internal();
-                        if (nm == STR("ID") && off != 0x00) ok = false;
-                        if (nm == STR("ReturnValue") && off != 0x10) ok = false;
-                    }
-                }
-                if (!ok)
-                {
-                    Output::send<LogLevel::Warning>(
-                        STR("[Lodestone] icon probe:   GetLocationPoint layout unexpected, NOT calling\n"));
-                }
-                else if (auto* system2 = UObjectGlobals::FindFirstOf(STR("PalCoopSkillSearchSystem")))
-                {
-                    auto** lr2 = system2->GetValuePtrByPropertyNameInChain<UObject*>(STR("LocationRegister"));
-                    auto* rids2 = (lr2 && *lr2) ? (*lr2)->GetValuePtrByPropertyNameInChain<Engine::FArrayHeader_>(
-                                                      STR("RegisteredLocationIds"))
-                                                : nullptr;
-                    if (rids2 && rids2->Num > 0 && rids2->Data)
-                    {
-                        auto* g = static_cast<Engine::FGuid_*>(rids2->Data);
-                        int known = 0;
-                        for (int32_t k = 0; k < rids2->Num; ++k)
-                        {
-                            Engine::ParamsGetLocationPoint gl{};
-                            gl.ID = g[k];
-                            if (Engine::call(lm, L"GetLocationPoint", gl) && gl.ReturnValue)
-                            {
-                                ++known;
-                            }
-                        }
-                        Output::send<LogLevel::Default>(
-                            STR("[Lodestone] icon probe:   LocationManager knows {}/{} of our registered ids\n"),
-                            known, rids2->Num);
-                    }
-                }
-            }
-            std::vector<UObject*> mo;
-            UObjectGlobals::FindAllOf(STR("PalLocationPoint_MapObject"), mo);
-            Output::send<LogLevel::Default>(STR("[Lodestone] icon probe:   PalLocationPoint_MapObject {}\n"),
-                                            mo.size());
-
-            std::vector<UObject*> deaths;
-            UObjectGlobals::FindAllOf(STR("WBP_IngameCompass_DeathMark_C"), deaths);
-            for (size_t i = 0; i < deaths.size() && i < 3; ++i)
-            {
-                auto* v = deaths[i]->GetValuePtrByPropertyNameInChain<uint8_t>(STR("Visibility"));
-                auto* cd = deaths[i]->GetValuePtrByPropertyNameInChain<double>(STR("CurrentDistance"));
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] icon probe:   DEATHMARK[{}] vis={} CurrentDistance={:.0f} slot {}\n"), i,
-                    (v && *v <= 4) ? kVisNames[*v] : STR("?"), cd ? *cd : -1.0, slot_desc(deaths[i]));
-            }
-            std::vector<UObject*> fts;
-            UObjectGlobals::FindAllOf(STR("WBP_IngameCompass_FastTravel_C"), fts);
-            int shown = 0;
-            for (auto* w : fts)
-            {
-                auto* v = w ? w->GetValuePtrByPropertyNameInChain<uint8_t>(STR("Visibility")) : nullptr;
-                if (!v || *v == 1)
-                {
-                    continue;   // Collapsed: the compass hides these by arc, per Tick
-                }
-                Engine::ParamsGetParent fp{};
-                Engine::call(w, L"GetParent", fp);
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] icon probe:   FT[{}] vis={} slot {} parent={}\n"), shown,
-                    (*v <= 4) ? kVisNames[*v] : STR("?"), slot_desc(w),
-                    fp.ReturnValue ? fp.ReturnValue->GetFullName() : STR("<none>"));
-                if (++shown >= 3)
-                {
-                    break;
-                }
-            }
-            // Created and SHOWN are two different lists.
-            //
-            // The compass keeps CreatedIconMap (every icon it built) and a separate
-            // VisibleIconIds (the ids it will actually draw), refreshed by
-            // GetVisibleIcons() off UpdateVisibleTimer -- not per tick. Our 7 widgets
-            // prove we made it into the first list. If our ids are missing from the
-            // second, the widget can be perfect forever and never appear, which is
-            // exactly what we are looking at.
-            //
-            // The ids to compare against are the register's own RegisteredLocationIds:
-            // whatever the register minted for our rocks is what the compass would have
-            // to list here.
-            for (auto* c : compasses_live())
-            {
-                auto* vids =
-                    c->GetValuePtrByPropertyNameInChain<Engine::FArrayHeader_>(STR("VisibleIconIds"));
-                auto* v = c->GetValuePtrByPropertyNameInChain<uint8_t>(STR("Visibility"));
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] icon probe:   compass vis={} VisibleIconIds={} {}\n"),
-                    (v && *v <= 4) ? kVisNames[*v] : STR("?"), vids ? vids->Num : -1, c->GetFullName());
-                if (vids && vids->Num > 0 && vids->Data)
-                {
-                    auto* g = static_cast<Engine::FGuid_*>(vids->Data);
-                    for (int32_t k = 0; k < vids->Num && k < 12; ++k)
-                    {
-                        Output::send<LogLevel::Default>(
-                            STR("[Lodestone] icon probe:     visible id {:08X}-{:08X}-{:08X}-{:08X}\n"), g[k].A,
-                            g[k].B, g[k].C, g[k].D);
-                    }
-                }
-            }
-            if (auto* system = UObjectGlobals::FindFirstOf(STR("PalCoopSkillSearchSystem")))
-            {
-                auto** lr = system->GetValuePtrByPropertyNameInChain<UObject*>(STR("LocationRegister"));
-                if (lr && *lr)
-                {
-                    auto* rids =
-                        (*lr)->GetValuePtrByPropertyNameInChain<Engine::FArrayHeader_>(
-                            STR("RegisteredLocationIds"));
-                    Output::send<LogLevel::Default>(STR("[Lodestone] icon probe:   RegisteredLocationIds={}\n"),
-                                                    rids ? rids->Num : -1);
-                    if (rids && rids->Num > 0 && rids->Data)
-                    {
-                        auto* g = static_cast<Engine::FGuid_*>(rids->Data);
-                        for (int32_t k = 0; k < rids->Num && k < 12; ++k)
-                        {
-                            Output::send<LogLevel::Default>(
-                                STR("[Lodestone] icon probe:     registered id {:08X}-{:08X}-{:08X}-{:08X}\n"),
-                                g[k].A, g[k].B, g[k].C, g[k].D);
-                        }
-                    }
-                }
-            }
-        }
-
-        // The LIVE compass only. FindAllOf also hands back the blueprint's own
-        // template (/Game/Pal/Blueprint/UI/WBP_PlayerUI.WBP_PlayerUI_C:WidgetTree...),
-        // which is not a widget on anyone's screen -- counting it is what made the P3a
-        // census report "2 instances" and sent this chase after a second compass that
-        // does not exist. A live UMG widget lives under /Engine/Transient.
-        static auto compasses_live() -> std::vector<UObject*>
-        {
-            std::vector<UObject*> all, live;
-            UObjectGlobals::FindAllOf(STR("WBP_Ingame_Compass_C"), all);
-            for (auto* c : all)
-            {
-                if (c && c->GetFullName().find(STR("/Engine/Transient")) != std::wstring::npos)
-                {
-                    live.push_back(c);
-                }
-            }
-            return live;
-        }
-
-        // Put the ore you asked for on vanilla's own compass.
-        //
-        // Vanilla builds this for the Pal search skills: register a found map object and
-        // it draws with that rock's own icon, at the right bearing, with a distance --
-        // no widget of ours, native by construction. We drive the same pipeline:
-        //   System::CreateSearchObject(PalCoopSkillSearchMapObject)
-        //   SearchMapObjects(ids, origin, radius, uid)  -> real hits, real InstanceIds
-        //   Register::RegisterMapObjectLocationsToCompass(hit) x N
-        // Forging a hit does not work -- the register drops a parameter whose InstanceId
-        // names no live map object, which is why this runs the real search.
-        //
-        // Scope, measured rather than assumed: SearchMapObjects only ever returns rocks
-        // that are STREAMED IN. A 10km radius from a base returned 7 copper and nothing
-        // else, because nothing else was loaded. That is not a limitation worth fighting:
-        // the compass widgets hide past HiddenDistance=30000 (300m) anyway, and the
-        // streamed region is far larger than that, so every rock the compass could draw
-        // is a rock the search can see.
-        auto update_ore_compass(double px, double py, double pz) -> void
-        {
-            auto* system = UObjectGlobals::FindFirstOf(STR("PalCoopSkillSearchSystem"));
-            if (!system)
-            {
-                return;
-            }
-            auto** lr = system->GetValuePtrByPropertyNameInChain<UObject*>(STR("LocationRegister"));
-            UObject* reg = (lr && *lr) ? *lr : nullptr;
-            if (!reg)
-            {
-                return;
-            }
-            auto* cls = UObjectGlobals::StaticFindObject<UClass*>(
-                nullptr, nullptr, STR("/Script/Pal.PalCoopSkillSearchMapObject"));
-            if (!cls)
-            {
-                return;
-            }
-            Engine::FGuid_ uid{};
-            if (auto* pc = UObjectGlobals::FindFirstOf(STR("PalPlayerController")))
-            {
-                Engine::ParamsGetPlayerUId gu{};
-                if (Engine::call(pc, L"GetPlayerUId", gu))
-                {
-                    uid = gu.ReturnValue;
-                }
-            }
-            if (!m_probed_icons)
-            {
-                m_probed_icons = true;   // once per session: enough to diagnose, no 45s spam
-                probe_compass_icons(px, py, pz);
-            }
-            Engine::ParamsCreateSearchObject cso{};
-            cso.SearchClass = cls;
-            if (!Engine::call(system, L"CreateSearchObject", cso) || !cso.ReturnValue)
-            {
-                return;
-            }
-            if (!search_params_ok(cso.ReturnValue))
-            {
-                return;
-            }
-            // Start the searcher the way vanilla does, before searching by hand.
-            //
-            // Seven theories are now dead and every ingredient checks out, which points
-            // at the one thing we never did: we register behind the system's back. The
-            // system reports IsRunning=false the whole time -- we call
-            // CreateSearchObject and then drive SearchMapObjects ourselves, so as far as
-            // the game is concerned no search is happening. If the compass only places
-            // search icons while a search is live, that gates placement while leaving
-            // every field we have probed perfectly correct, which is exactly the shape
-            // of what we see.
-            //
-            // Start() is the base's real entry point (Pal.hpp: SearchOrigin, SkillRank,
-            // bIsRunning, and Tick(dt, register) is what registers natively).
-            {
-                UFunction* sfn = cso.ReturnValue->GetFunctionByNameInChain(FName(STR("Start"), FNAME_Find));
-                bool sok = sfn != nullptr;
-                if (sfn)
-                {
-                    for (FProperty* pr : sfn->ForEachProperty())
-                    {
-                        const auto nm = pr->GetName();
-                        const int32_t off = pr->GetOffset_Internal();
-                        if (nm == STR("Origin") && off != 0x00) sok = false;
-                        if (nm == STR("Rank") && off != 0x18) sok = false;
-                        if (nm == STR("RequestPlayerUId") && off != 0x1C) sok = false;
-                        Output::send<LogLevel::Default>(
-                            STR("[Lodestone] compass: Start param {:<20} @ {:#04x}\n"), nm, off);
-                    }
-                }
-                if (sok)
-                {
-                    Engine::ParamsStart sp2{};
-                    sp2.Origin = {px, py, pz};
-                    sp2.Rank = 1;
-                    sp2.RequestPlayerUId = uid;
-                    Engine::call(cso.ReturnValue, L"Start", sp2);
-                    auto* running = cso.ReturnValue->GetValuePtrByPropertyNameInChain<bool>(STR("bIsRunning"));
-                    Engine::ParamsIsRunning sysrun{};
-                    const bool got = Engine::call(system, L"IsRunning", sysrun);
-                    Output::send<LogLevel::Default>(
-                        STR("[Lodestone] compass: Start() -> searcher bIsRunning={} system IsRunning={}\n"),
-                        running ? (*running ? STR("true") : STR("false")) : STR("?"),
-                        got ? (sysrun.ReturnValue ? STR("true") : STR("false")) : STR("<no fn>"));
-                }
-                else
-                {
-                    Output::send<LogLevel::Warning>(
-                        STR("[Lodestone] compass: Start layout unexpected, NOT calling\n"));
-                }
-            }
-            // Every ore id DT_LocationUIData knows an icon for. Searching all six in one
-            // call rather than one call per enabled layer: the game's cost is a walk over
-            // the loaded map objects either way, and the toggle filter happens below on
-            // the results, where it is exact.
-            static FName ore_ids[] = {
-                FName(STR("DamagableRock0001"), FNAME_Add), FName(STR("DamagableRock0002"), FNAME_Add),
-                FName(STR("DamagableRock0003"), FNAME_Add), FName(STR("DamagableRock0004"), FNAME_Add),
-                FName(STR("DamagableRock0005"), FNAME_Add), FName(STR("DamagableRock0006"), FNAME_Add)};
-            Engine::ParamsSearchMapObjects sp{};
-            sp.SearchMapObjIds.Data = ore_ids;
-            sp.SearchMapObjIds.Num = static_cast<int32_t>(std::size(ore_ids));
-            sp.SearchMapObjIds.Max = sp.SearchMapObjIds.Num;
-            sp.Origin = {px, py, pz};
-            sp.SearchRadius = static_cast<float>(kCompassRangeUU);
-            sp.RequestPlayerUId = uid;
-            Engine::call(cso.ReturnValue, L"SearchMapObjects", sp);
-
-            auto* res = cso.ReturnValue->GetValuePtrByPropertyNameInChain<Engine::FArrayHeader_>(
-                STR("SearchResultParameters"));
-            if (!res || res->Num <= 0 || !res->Data)
-            {
-                return;
-            }
-            auto* found = static_cast<Engine::FPalCoopSkillSearchResultParameter_*>(res->Data);
-            // Keep the ones whose layer is switched on, nearest first.
-            std::vector<std::pair<double, int32_t>> keep;
-            for (int32_t i = 0; i < res->Num; ++i)
-            {
-                const int layer = layer_at(found[i].Location.X, found[i].Location.Y);
-                if (layer < 0 || !is_layer_on(layer))
-                {
-                    continue;
-                }
-                const double dx = found[i].Location.X - px;
-                const double dy = found[i].Location.Y - py;
-                keep.emplace_back(std::sqrt(dx * dx + dy * dy), i);
-            }
-            std::sort(keep.begin(), keep.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-            // A cap, because clustering makes radius alone useless as a bound: one seam
-            // of coal is dozens of rocks inside 50m, and a compass showing all of them is
-            // a smear that hides everything else. Nearest-N is what a navigator wants.
-            if (keep.size() > kCompassMaxIcons)
-            {
-                keep.resize(kCompassMaxIcons);
-            }
-            // Read the register's own array rather than counting our calls. "7
-            // registered" previously meant "we called it 7 times", which cannot tell
-            // an accepted parameter from a rejected one -- and rejection is exactly
-            // what happened to the forged parameters this pipeline replaced.
-            auto* reg_ids = reg->GetValuePtrByPropertyNameInChain<Engine::FArrayHeader_>(
-                STR("RegisteredLocationIds"));
-            const int32_t before = reg_ids ? reg_ids->Num : -1;
-            for (const auto& [dist, idx] : keep)
-            {
-                Engine::ParamsRegisterToCompass rp{};
-                rp.ResultParameter = found[idx];
-                Engine::call(reg, L"RegisterMapObjectLocationsToCompass", rp);
-            }
-            const int32_t after = reg_ids ? reg_ids->Num : -1;
-            // Nudge the compass to place what we just registered.
-            //
-            // Every ingredient is verified present: the manager knows 7/7 of our ids,
-            // 7 PalLocationPoint_MapObject exist, each widget's MyLocationID matches a
-            // registered id, targets and CurrentDistance are right. The ONLY thing
-            // missing is the RenderTransform -- ours read (0,0) while the death mark,
-            // which is on screen, reads (354,0). The icon's own Tick clearly runs,
-            // since it is what computes CurrentDistance, so placement is the compass's
-            // job, not the icon's.
-            //
-            // 'Update Icon' is a reflected, no-argument BP function on the compass.
-            // The guess worth one call: it is event-driven off vanilla's own search
-            // starting, and registering behind its back never triggers it. If that is
-            // right, the icons snap to their bearings; if the translations stay 0, the
-            // placement is somewhere else entirely and no more poking will find it.
-            // (The space in the name is real -- BP function names keep them.)
-            for (auto* c : compasses_live())
-            {
-                struct
-                {
-                } noargs;
-                Engine::call(c, L"Update Icon", noargs);
-            }
-            // Only on a change: this runs every 45s forever, and a line per refresh
-            // would bury every other diagnostic in the log within an hour.
-            if (keep.size() != m_last_compass_count || res->Num != m_last_compass_hits)
-            {
-                m_last_compass_count = keep.size();
-                m_last_compass_hits = res->Num;
-                const double nearest_m = keep.empty() ? -1.0 : keep.front().first / 100.0;
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] compass: {} rocks streamed, {} on enabled layers, sent {}; "
-                        "RegisteredLocationIds {} -> {}; nearest {:.0f}m\n"),
-                    res->Num, keep.size(), keep.size(), before, after, nearest_m);
-            }
-        }
-
-
         auto place_dots() -> void
         {
             auto* image_class =
@@ -5678,11 +4867,15 @@ inline bool g_wp_on = false;
                     }
                 }
             }
+            // Phase stamps for the breakdown in the "dots placed" line below: where a slow
+            // map open actually spends its time (dot creation vs object scans vs paint).
+            const auto t_static = std::chrono::steady_clock::now();
             // effigies & notes, filtered by the live collected set
             std::unordered_set<std::wstring> collected;
             const bool have_flags = Collected::gather(collected);
-            // one-shot diagnostic: reveals the obtain-flag key format vs our GUIDs
-            if (!m_flag_probe_done)
+            const auto t_flags = std::chrono::steady_clock::now();
+            // one-shot diagnostic (Debug=1): reveals the obtain-flag key format vs our GUIDs
+            if (g_debug && !m_flag_probe_done)
             {
                 m_flag_probe_done = true;
                 std::wstring samples;
@@ -5805,6 +4998,7 @@ inline bool g_wp_on = false;
             // (eggs get picked up, towers get unlocked). Mark the boundary so a map reopen
             // re-runs only this tail via refresh_live_layers, not the whole dense pool.
             m_live_begin = m_emit_cursor;
+            const auto t_collect = std::chrono::steady_clock::now();
             // live eggs: no static positions (random lottery placement + respawn),
             // so enumerate the PalEgg loot actors currently loaded around the player
             // and place a dot at each. Only covers the streamed-in area near you; the
@@ -5817,6 +5011,7 @@ inline bool g_wp_on = false;
             placed += place_nearest_dungeons(image_class);   // nearest cave entrances (Build 1.7)
             placed += place_nearest_schematics(image_class);   // nearest schematic puzzle towers
             placed += place_nearest_lucky(image_class);   // nearest lucky/rare wild Pal (Build B)
+            const auto t_live = std::chrono::steady_clock::now();
             // collapse any leftover pooled dots beyond this pass
             for (size_t i = m_emit_cursor; i < m_dots.size(); ++i)
             {
@@ -5840,16 +5035,16 @@ inline bool g_wp_on = false;
                 (g_icons_enabled && m_icons_ready.load(std::memory_order_acquire))
                     ? paint_pass(SIZE_MAX, true, m_icon_scan_vis)
                     : 0;
-            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - t0).count();
+            const auto t_end = std::chrono::steady_clock::now();
+            const auto span_ms = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+                return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
+            };
             Output::send<LogLevel::Default>(
-                STR("[Lodestone] {} dots placed, {} collected hidden (pool {}), {} icons painted inline in {}ms\n"),
-                placed, hidden, m_dots.size(), pre_painted, ms);
-            if (!m_logged_census)
-            {
-                m_logged_census = true;
-                census_locations();
-            }
+                STR("[Lodestone] {} dots placed, {} collected hidden (pool {}), {} icons painted inline in {}ms "
+                    "(static {} + flags {} + collectables {} + live scans {} + paint {})\n"),
+                placed, hidden, m_dots.size(), pre_painted, span_ms(t0, t_end), span_ms(t0, t_static),
+                span_ms(t_static, t_flags), span_ms(t_flags, t_collect), span_ms(t_collect, t_live),
+                span_ms(t_live, t_end));
             m_placed = true;
             m_collapsed = false;
 
@@ -5859,6 +5054,8 @@ inline bool g_wp_on = false;
             // children), so it always read 0 and could neither confirm nor deny the leak.
             // Total stays small if ensure_layer_canvas keeps sweeping reused bodies; an
             // unbounded climb across opens is the leak (two overlays paint -> "2 where 1").
+            // Debug-only: the count costs a full object-array walk on every map open.
+            if (g_debug)
             {
                 std::vector<UObject*> canvases;
                 UObjectGlobals::FindAllOf(STR("CanvasPanel"), canvases);
@@ -7275,53 +6472,6 @@ inline bool g_wp_on = false;
             }
         }
 
-        // Poll checkbox states; on change, update toggle + layer visibility.
-        // Dev self-test: exercise the range fast path with no mouse.
-        //
-        // The mouse cannot be driven on this machine -- the game grabs the pointer and
-        // recentres it every frame, so neither xdotool nor ydotool can place it, and
-        // the game's own cursor ignores relative motion too. The fast path only runs
-        // when a checkbox changes, so it would otherwise ship on a code review alone.
-        //
-        // First attempt drove UCheckBox::SetIsChecked and waited for poll_panel to
-        // notice. The checkbox DID flip on screen and poll_panel never reported a
-        // change -- UMG's IsChecked() reads the Slate widget, which evidently does not
-        // observe a programmatic set the way it observes a click. Rather than chase
-        // that (it is not a path any player takes), do what the poll does on a real
-        // click: update the row, update the layer state, and call apply_layers. That
-        // tests the code this commit actually changed. The poll -> apply_layers wiring
-        // is one line, verified by inspection.
-        //
-        // The assertion is a number: Coal has 496 points, so a correct range path
-        // re-applies 496 dots and NOT the 7,617 in the pool.
-        //
-        // Dev only: gated on AutoLoadWorld, which real players never have.
-        auto dev_selftest_toggle() -> void
-        {
-            if (g_autoload_world.empty() || m_selftest_done || m_panel_rows.empty())
-            {
-                return;
-            }
-            for (auto& row : m_panel_rows)
-            {
-                if (!row.checkbox || layer_key(row.layer_id) != std::wstring(L"Coal"))
-                {
-                    continue;
-                }
-                m_selftest_done = true;
-                const bool want = !row.last_checked;
-                Engine::ParamsSetIsChecked p{want};
-                Engine::call(row.checkbox, L"SetIsChecked", p);   // keep the UI honest
-                row.last_checked = want;
-                m_layer_on[row.layer_id] = want;
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] selftest: Coal -> {}; expect 496 dots re-applied, not {}\n"),
-                    want ? STR("on") : STR("off"), m_dots.size());
-                apply_layers({row.layer_id});
-                return;
-            }
-        }
-
         // Apply queued toggles once the debounce settles (see m_pending_layers). Runs
         // every tick; a dense layer's churn now happens once per burst, not once per click.
         auto drain_pending_apply() -> void
@@ -7357,9 +6507,9 @@ inline bool g_wp_on = false;
             m_panel_relayout = true;   // redraw pill highlights / apply fold state
         }
 
+        // Poll checkbox states; on change, update toggle + layer visibility.
         auto poll_panel() -> void
         {
-            dev_selftest_toggle();
             bool changed = false;
             int failed = 0, polled = 0;
             for (auto& row : m_panel_rows)
@@ -7518,7 +6668,6 @@ inline bool g_wp_on = false;
             m_compass_center = nullptr;
             m_compass_markers.clear();
             m_compass_marker_ix.clear();
-            m_compass_have_last = false;
         }
 
         // Same, for the minimap. A HUD rebuild often means the world changed too, which
@@ -7545,7 +6694,7 @@ inline bool g_wp_on = false;
 
         // WBP_PlayerUI's root canvas -- the always-on gameplay HUD container that
         // holds the compass. FindAllOf also returns the blueprint template (the
-        // compass-census trap, see compasses_live), so keep only the live
+        // same trap that once made a census report "2 compasses"), so keep only the live
         // /Engine/Transient instance. Returns its CanvasPanel_Root, or nullptr when
         // the HUD is not up (title screen, loading).
         auto find_player_hud() -> UObject*
@@ -7602,7 +6751,10 @@ inline bool g_wp_on = false;
                 return m_hud_root;
             }
             m_next_hud_walk = now + std::chrono::milliseconds(5000);
-            m_hud_root = find_player_hud();
+            {
+                PerfMax<long long> perf{m_perf_hud_max_us};
+                m_hud_root = find_player_hud();
+            }
             m_hud_root_idx = m_hud_root ? m_hud_root->GetInternalIndex() : -1;
             return m_hud_root;
         }
@@ -8122,62 +7274,6 @@ inline bool g_wp_on = false;
             Output::send<LogLevel::Default>(STR("[Lodestone] terrain: SceneCapture2D spawned + wired\n"));
         }
 
-        // Whitelist the terrain into the CAPTURE (PRM_UseShowOnlyList): the capture renders
-        // ONLY the actors whose components we add here, so pals / NPCs / POI billboards /
-        // floating UI sprites simply never appear -- a clean map, not a top-down photo. The
-        // opposite (HideActorComponents/HideComponent blacklist) was tried and PROVEN not
-        // respected by this capture. Round-robin ONE FindAllOf per fire (each ~20 ms -- see
-        // the minimap perf note) so there is no periodic stutter; each class re-sweeps
-        // ~every 2.4 s, which ALSO catches newly world-partition-streamed terrain chunks as
-        // the player travels. ShowOnly lists AddUnique, so re-firing never grows them
-        // unbounded (unloaded chunks leave harmless stale weak pointers).
-        auto clean_terrain_capture() -> void
-        {
-            if (!m_terrain_comp || !g_minimap_terrain)
-            {
-                return;
-            }
-            const auto now = std::chrono::steady_clock::now();
-            if (now < m_next_capture_clean)
-            {
-                return;
-            }
-            m_next_capture_clean = now + std::chrono::milliseconds(800);
-
-            // The terrain actor classes to keep. Landscape = the ground heightmap chunks
-            // (the relief + biome colour); foliage = grass/trees; decals = the worn dirt
-            // paths + base clearing painted on the ground (this is what made the terrain
-            // "match" the old look). StaticMeshActor was DROPPED: 3420 of them spiked the
-            // minimap tick to ~55 ms (ShowOnlyActorComponents call-storm) AND some white-
-            // albedo props/POI meshes were the leftover white boxes. Buildings therefore do
-            // not render into the minimap -- a clean natural-terrain map. Everything else
-            // (billboards, pals, NPCs) is excluded by simply not being on the list.
-            static const wchar_t* const kKeep[] = {L"LandscapeStreamingProxy", L"InstancedFoliageActor",
-                                                   L"DecalActor"};
-            constexpr int kKeepN = 3;
-            const wchar_t* cls = kKeep[m_capture_clean_idx];
-
-            std::vector<UObject*> found;
-            UObjectGlobals::FindAllOf(cls, found);
-            for (auto* a : found)
-            {
-                if (a)
-                {
-                    Engine::ParamsShowOnlyActorComponents p{a, true};
-                    Engine::call(m_terrain_comp, L"ShowOnlyActorComponents", p);
-                }
-            }
-            m_capture_clean_idx = (m_capture_clean_idx + 1) % kKeepN;
-            static int logn = 0;
-            if (logn < 12)
-            {
-                ++logn;
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] terrain show-only: kept {} {} in capture\n"),
-                    static_cast<int>(found.size()), cls);
-            }
-        }
-
         // Per-tick: keep the capture straight above the player, looking down, and
         // track zoom changes into OrthoWidth. Verified once in init; K2_TeleportTo has
         // no out-param so it is safe to call without re-verifying each frame.
@@ -8328,6 +7424,7 @@ inline bool g_wp_on = false;
         {
             __try
             {
+                const auto f0 = std::chrono::steady_clock::now();
                 handle_minimap_input();
                 // Live nearest scan for the actor layers (eggs/dungeons/lucky) + lucky range
                 // alert. Self-throttled round-robin (one FindAllOf per fire), ungated by the
@@ -8361,6 +7458,11 @@ inline bool g_wp_on = false;
                 {
                     m_mm_tick_max = tus;
                 }
+                const long long fus = std::chrono::duration_cast<std::chrono::microseconds>(t2 - f0).count();
+                if (fus > m_perf_frame_max_us)
+                {
+                    m_perf_frame_max_us = fus;
+                }
                 // Heartbeat: stamp ONLY after the whole body completes cleanly. If any call
                 // above AV'd (server world teardown), the __except skips this and
                 // m_last_frame_hook goes stale within ~1 s -> tick_map's fallback takes over
@@ -8388,7 +7490,7 @@ inline bool g_wp_on = false;
                 // Report the worst build/tick cost each ~5 s window (string work lives
                 // here, outside the __try). First window is skipped (maxes not seeded).
                 const auto now = std::chrono::steady_clock::now();
-                if (g_minimap && now >= m_mm_next_log)
+                if (g_debug && g_minimap && now >= m_mm_next_log)
                 {
                     if (m_mm_next_log.time_since_epoch().count() != 0)
                     {
@@ -8399,6 +7501,24 @@ inline bool g_wp_on = false;
                     m_mm_next_log = now + std::chrono::seconds(5);
                     m_mm_build_max = 0;
                     m_mm_tick_max = 0;
+                }
+                // Cost summary, one line per 5 minutes. First window is skipped: it
+                // spans the title screen and world load, which are not play.
+                if (now >= m_perf_next_log)
+                {
+                    const long long tick_us = m_perf_tick_max_us.exchange(0);
+                    const long long find_us = m_perf_find_map_max_us.exchange(0);
+                    if (m_perf_next_log.time_since_epoch().count() != 0)
+                    {
+                        Output::send<LogLevel::Default>(
+                            STR("[Lodestone] cost, worst single call in 5 min: HUD frame {}us (live scan {}us, HUD "
+                                "walk {}us); map tick {}us (find_map {}us)\n"),
+                            m_perf_frame_max_us, m_perf_live_max_us, m_perf_hud_max_us, tick_us, find_us);
+                    }
+                    m_perf_next_log = now + std::chrono::seconds(300);
+                    m_perf_frame_max_us = 0;
+                    m_perf_live_max_us = 0;
+                    m_perf_hud_max_us = 0;
                 }
             }
             catch (...)
@@ -8740,7 +7860,7 @@ inline bool g_wp_on = false;
             // DIAG: is the vanishing a PLACEMENT problem (cursor==0) or a RENDER/visibility
             // one (cursor>0 but nothing on screen)? Log the placed count + the geometry so
             // one relaunch settles it.
-            if (now >= m_mm_dbg_at)
+            if (g_debug && now >= m_mm_dbg_at)
             {
                 m_mm_dbg_at = now + std::chrono::seconds(3);
                 Output::send<LogLevel::Default>(
@@ -8929,6 +8049,10 @@ inline bool g_wp_on = false;
             // Rate-limited "why is the strip empty" probe. The strip going silent
             // mid-session was the tick early-returning; this says which gate.
             auto dbg_gate = [this](const wchar_t* why) {
+                if (!g_debug)
+                {
+                    return;
+                }
                 const auto now = std::chrono::steady_clock::now();
                 if (now >= m_next_compass_dbg)
                 {
@@ -9018,10 +8142,6 @@ inline bool g_wp_on = false;
             // no icons", Kenny). The expensive part -- compute_nearest -- is already throttled
             // to 1 Hz above; the place loop below is a handful of SetOffsets, cheap enough to
             // run every tick so the markers always reflect the current nearest set.
-            m_compass_last_px = px;
-            m_compass_last_py = py;
-            m_compass_last_yaw = yaw;
-            m_compass_have_last = true;
 
             auto* image_class =
                 UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.Image"));
@@ -9060,6 +8180,9 @@ inline bool g_wp_on = false;
             };
             std::vector<Place> places;
             int enabled_seen = 0, arc_culled = 0;   // dev: why the strip is empty
+            // Build the per-marker debug text only on the frame that will print it --
+            // it used to be formatted for every marker every frame and thrown away.
+            const bool dbg_due = g_debug && now >= m_next_compass_dbg;
             std::wstring dbg;
             for (const auto& [layer_id, n] : m_nearest)
             {
@@ -9080,7 +8203,7 @@ inline bool g_wp_on = false;
                 {
                     rel += 360.0;
                 }
-                if (dbg.size() < 400)
+                if (dbg_due && dbg.size() < 400)
                 {
                     // wb0 = the marker's TRUE world compass bearing (0=N,90=E,180=S,270=W),
                     // unflipped, camera-independent. With yaw + rel below, naming one marker's
@@ -9098,7 +8221,7 @@ inline bool g_wp_on = false;
                 }
                 places.push_back({half + rel * kpx, n.dist_uu, n.icon, n.color, layer_id});
             }
-            if (now >= m_next_compass_dbg)
+            if (dbg_due)
             {
                 m_next_compass_dbg = now + std::chrono::milliseconds(3000);
                 Output::send<LogLevel::Default>(
@@ -9260,10 +8383,10 @@ inline bool g_wp_on = false;
 
         auto tick() -> void
         {
+            PerfMax<std::atomic<long long>> perf{m_perf_tick_max_us};
             // Before find_map: the title screen has no map, so anything below the
             // early-out never runs there -- which is exactly where autoload lives.
             try_autoload();
-            tick_compass();
             tick_map_guarded();
         }
         // The map/panel/dot work below touches UMG on the on_update thread. On a server
@@ -9335,7 +8458,12 @@ inline bool g_wp_on = false;
             UObject* root = nullptr;
             UObject* map_body_canvas = nullptr;
             UObject* mask = nullptr;
-            if (!find_map(root, map_body_canvas, mask))
+            bool map_open = false;
+            {
+                PerfMax<std::atomic<long long>> perf{m_perf_find_map_max_us};
+                map_open = find_map(root, map_body_canvas, mask);
+            }
+            if (!map_open)
             {
                 // map closed: collapse our overlay once (widgets stay pooled)
                 if (m_layer_canvas && !m_collapsed)
