@@ -1511,7 +1511,9 @@ inline bool g_wp_on = false;
         // "species" (variants + non-pal spawner entries), and one letter clustered to ~197
         // -> a 262-row panel that spiked Slate and crashed (Kenny, 2026-07-19). A single
         // layout near ~56 rows is known safe; the rail is ~26, so cap the list well under.
-        static constexpr size_t kPalListMax = 20;
+        // It is a PAGE size now (2026-10-18): 14 rows + the search line, a full 26-letter
+        // rail + Del/All chips and the 3-item pager come to ~52, under that ~56.
+        static constexpr size_t kPalListMax = 14;
         // Effigy relic-type picker ids (#43): 13 types + "All", no paging (short list).
         // A separate band from the Pal picker so poll routing is unambiguous.
         static constexpr int kRelicAll = 21000;       // "All types"
@@ -1522,7 +1524,12 @@ inline bool g_wp_on = false;
         static constexpr int kMenuOpen = 22001;    // launcher -> open the menu
         static constexpr int kMenuApply = 22002;   // commit staged edits -> map
         static constexpr int kMenuCancel = 22003;  // discard staged edits
-        static constexpr int kLetterAll = 22010;   // clear the letter filter (also the "tap a letter" hint id)
+        static constexpr int kLetterAll = 22010;   // clear the letter filter + search (also the search-line id)
+        static constexpr int kPalShowAll = 22011;  // "All" chip: list every species, paged
+        static constexpr int kPalBackspace = 22012; // "Del" chip: drop the last tapped letter
+        static constexpr int kPalPrev = 22030;     // Pal list: previous page
+        static constexpr int kPalNext = 22031;     // Pal list: next page
+        static constexpr int kPalPageInfo = 22032; // Pal list: "Page x of y" / no-match line (inert)
         static constexpr int kTabBase = 22020;     // ..22022: config-modal tab select (Layers/Effigies/Pals)
         static constexpr int kLetterBase = 22100;  // ..22125: filter Pal list by A..Z (base + c-'A')
         static auto is_pal_pick_id(int id) -> bool { return id >= kPalPagePrev && id < kRelicAll; }
@@ -1543,7 +1550,9 @@ inline bool g_wp_on = false;
         std::unordered_map<int, bool> m_stage_layer_on;   // staged layer toggles (seeded from committed on open)
         std::wstring m_stage_pal;               // staged tracked species (internal name)
         int m_stage_relic = -1;                 // staged effigy-type filter
-        std::wstring m_pal_filter;              // active A-Z letter filter (upper); empty = show all
+        std::wstring m_pal_filter;              // active A-Z letter filter (upper); "*" = every species
+        std::wstring m_pal_query;               // letters tapped on the rail (lowercase); non-empty = search
+        size_t m_pal_page = 0;                  // page of the current Pal list (kPalListMax rows each)
         // Localized display names, internal -> display (SheepBall -> Lamball). Resolved
         // once per session via UPalMasterDataTablesUtility::GetLocalizedText; falls back
         // to a prettified internal name if the reflected call yields nothing.
@@ -1603,6 +1612,10 @@ inline bool g_wp_on = false;
         UObject* m_card_canvas = nullptr;
         UObject* m_card_slot = nullptr;
         std::wstring m_panel_root_name;
+        // Map-base flicker hold (screen_canvas, crash 2026-10-18).
+        std::chrono::steady_clock::time_point m_stored_seen_visible{};   // last tick our base was on screen
+        std::chrono::steady_clock::time_point m_swap_since{};            // when the current swap was first seen
+        bool m_swap_pending = false;
         struct PanelRow
         {
             UObject* checkbox;
@@ -2623,77 +2636,108 @@ inline bool g_wp_on = false;
                     static const wchar_t* const kAZ[26] = {
                         L"A", L"B", L"C", L"D", L"E", L"F", L"G", L"H", L"I", L"J", L"K", L"L", L"M",
                         L"N", L"O", L"P", L"Q", L"R", L"S", L"T", L"U", L"V", L"W", L"X", L"Y", L"Z"};
-                    // Letter rail: only letters that actually have a species. Tapping one
-                    // filters the list below. The list is shown ONE letter at a time (never
-                    // all ~100 at once -- there is no scroll widget, so an unfiltered list
-                    // would run off the screen).
-                    bool has[26] = {};
-                    for (const auto& s : m_pal_species)
+                    // The PanelItems hold const wchar_t* into m_pal_row_labels, so reserve the
+                    // whole block before the first push (a realloc mid-fill would dangle every
+                    // earlier pointer): search line + one page + the page-info line.
+                    m_pal_row_labels.reserve(kPalListMax + 3);
+                    // Search line, always first. Tapping letters on the rail below builds an
+                    // on-screen search across ALL species; tapping this line clears it.
+                    std::wstring shown_query = m_pal_query;
+                    for (auto& ch : shown_query)
                     {
-                        const std::wstring disp = display_name(s);
-                        wchar_t c = disp.empty() ? L'?' : disp[0];
-                        if (c >= L'a' && c <= L'z')
-                        {
-                            c = static_cast<wchar_t>(c - 32);
-                        }
-                        if (c >= L'A' && c <= L'Z')
-                        {
-                            has[c - L'A'] = true;
-                        }
+                        ch = static_cast<wchar_t>(std::towupper(ch));
                     }
-                    for (int i = 0; i < 26; ++i)
+                    m_pal_row_labels.push_back(
+                        m_pal_query.empty() ? std::wstring(L"Tap letters to search all Pals, or All for the full list")
+                                            : (L"Search: " + shown_query + L"_     (tap here to clear)"));
                     {
-                        if (!has[i])
-                        {
-                            continue;
-                        }
-                        const bool sel = (!m_pal_filter.empty() && m_pal_filter[0] == static_cast<wchar_t>(L'A' + i));
-                        v.push_back({PanelItem::Row, kAZ[i], kLetterBase + i, nullptr, 0.0f, 0.0f, 0.0f, PanelItem::Chip,
-                                     sel});
+                        PanelItem line{PanelItem::Row, m_pal_row_labels.back().c_str(), kLetterAll, nullptr, 0.0f,
+                                       0.0f, 0.0f, PanelItem::Pick, !m_pal_query.empty()};
+                        line.wide = true;
+                        v.push_back(line);
                     }
-                    if (m_pal_filter.empty())
                     {
-                        m_pal_row_labels.push_back(L"Tap a letter to list Pals");
+                        // Letter rail. Before the first tap: only letters some name STARTS
+                        // with. While searching: every letter (any can narrow "la" -> "lam"),
+                        // plus "Del" to take the last one back. "All" lists every species.
+                        bool has[26] = {};
+                        for (const auto& s : m_pal_species)
                         {
-                            PanelItem hint{PanelItem::Row, m_pal_row_labels.back().c_str(), kLetterAll, nullptr, 0.0f,
-                                           0.0f, 0.0f, PanelItem::Pick, false};
-                            hint.wide = true;
-                            v.push_back(hint);
+                            const std::wstring disp = display_name(s);
+                            wchar_t c = disp.empty() ? L'?' : disp[0];
+                            if (c >= L'a' && c <= L'z')
+                            {
+                                c = static_cast<wchar_t>(c - 32);
+                            }
+                            if (c >= L'A' && c <= L'Z')
+                            {
+                                has[c - L'A'] = true;
+                            }
                         }
+                        for (int i = 0; i < 26; ++i)
+                        {
+                            if (!has[i] && m_pal_query.empty())
+                            {
+                                continue;
+                            }
+                            v.push_back({PanelItem::Row, kAZ[i], kLetterBase + i, nullptr, 0.0f, 0.0f, 0.0f,
+                                         PanelItem::Chip, false});
+                        }
+                        if (!m_pal_query.empty())
+                        {
+                            v.push_back({PanelItem::Row, L"Del", kPalBackspace, nullptr, 0.0f, 0.0f, 0.0f,
+                                         PanelItem::Chip, false});
+                        }
+                        v.push_back({PanelItem::Row, L"All", kPalShowAll, nullptr, 0.0f, 0.0f, 0.0f, PanelItem::Chip,
+                                     m_pal_query.empty() && m_pal_filter == L"*"});
                     }
-                    else
+                    if (!m_pal_query.empty() || !m_pal_filter.empty())
                     {
-                        // Filtered species, one per line, REAL names, staged selection
-                        // highlighted, CAPPED at kPalListMax so one crowded letter can't
-                        // blow the layout up (the 262-row crash). The PanelItems hold const
-                        // wchar_t* into m_pal_row_labels, so reserve exactly (a realloc
-                        // mid-fill would dangle every earlier pointer).
+                        // One PAGE of the matching species, REAL names, staged selection
+                        // highlighted. Paged rather than capped, so every species is reachable
+                        // while the layout stays under the 262-row crash. A row's id is its
+                        // index in the WHOLE filtered list, so handle_pal_pick maps it back
+                        // whatever page it was on.
                         const auto list = filtered_species();
-                        const size_t shown = std::min(list.size(), kPalListMax);
-                        m_pal_row_labels.reserve(shown + 1);
-                        for (size_t i = 0; i < shown; ++i)
+                        const size_t pages = list.empty() ? 1 : (list.size() + kPalListMax - 1) / kPalListMax;
+                        if (m_pal_page >= pages)
+                        {
+                            m_pal_page = pages - 1;
+                        }
+                        const size_t first = m_pal_page * kPalListMax;
+                        const size_t last = std::min(list.size(), first + kPalListMax);
+                        for (size_t i = first; i < last; ++i)
                         {
                             m_pal_row_labels.push_back(display_name(list[i]));
                             v.push_back({PanelItem::Row, m_pal_row_labels.back().c_str(),
                                          kPalPickBase + static_cast<int>(i), nullptr, 0.0f, 0.0f, 0.0f,
                                          PanelItem::Pick, list[i] == m_stage_pal});
                         }
-                        if (list.size() > shown)
+                        if (list.empty() || pages > 1)
                         {
-                            m_pal_row_labels.push_back(L"+ " + std::to_wstring(list.size() - shown) +
-                                                       L" more (type to search — soon)");
-                            {
-                                PanelItem hint{PanelItem::Row, m_pal_row_labels.back().c_str(), kLetterAll, nullptr,
-                                               0.0f, 0.0f, 0.0f, PanelItem::Pick, false};
-                                hint.wide = true;
-                                v.push_back(hint);
-                            }
+                            m_pal_row_labels.push_back(
+                                list.empty() ? (L"No Pal matches \"" + shown_query + L"\"")
+                                             : (L"Page " + std::to_wstring(m_pal_page + 1) + L" of " +
+                                                std::to_wstring(pages) + L"  -  " + std::to_wstring(list.size()) +
+                                                L" Pals"));
+                            PanelItem info{PanelItem::Row, m_pal_row_labels.back().c_str(), kPalPageInfo, nullptr,
+                                           0.0f, 0.0f, 0.0f, PanelItem::Pick, false};
+                            info.wide = true;   // full width: also closes the 2-up grid so Prev/Next pair below
+                            v.push_back(info);
+                        }
+                        if (pages > 1)
+                        {
+                            v.push_back({PanelItem::Row, L"< Prev", kPalPrev, nullptr, 0.0f, 0.0f, 0.0f,
+                                         PanelItem::Pick, false});
+                            v.push_back({PanelItem::Row, L"Next >", kPalNext, nullptr, 0.0f, 0.0f, 0.0f,
+                                         PanelItem::Pick, false});
                         }
                         // Diagnostic: the wild-spawner set has ~482 entries and one letter
-                        // clustered to ~197. Log the true per-letter count so the pollution
-                        // can be tracked down (variants? non-pal spawner rows?).
-                        Output::send<LogLevel::Default>(STR("[Lodestone] pal list: letter {} -> {} species\n"),
-                                                        m_pal_filter, list.size());
+                        // clustered to ~197. Log the true count so the pollution can be
+                        // tracked down (variants? non-pal spawner rows?).
+                        Output::send<LogLevel::Default>(STR("[Lodestone] pal list: {} -> {} species, page {}/{}\n"),
+                                                        m_pal_query.empty() ? m_pal_filter : m_pal_query, list.size(),
+                                                        m_pal_page + 1, pages);
                     }
                 }
             }
@@ -4840,6 +4884,8 @@ inline bool g_wp_on = false;
             m_stage_pal = g_track_pal;
             m_stage_relic = g_track_relic;
             m_pal_filter.clear();
+            m_pal_query.clear();
+            m_pal_page = 0;
             m_active_tab = 0;   // open on the Layers tab
             build_pal_display();
             m_menu_open = true;
@@ -4979,16 +5025,47 @@ inline bool g_wp_on = false;
             }
         }
 
-        // The trackable species matching the active letter filter, sorted by DISPLAY
+        // The trackable species matching the tapped search / filter, sorted by DISPLAY
         // name (so the list reads A-Z by the name Kenny sees, not the internal enum).
         // Layout AND handle_pal_pick both call this, so a picked row's index maps back
-        // to the same species. Empty filter = every species.
+        // to the same species. One tapped letter = names STARTING with it (the old letter
+        // filter); two or more = names CONTAINING them anywhere ("noct" finds every Noct
+        // variant), the ones that start with it first. Filter "*" or empty = all.
         auto filtered_species() const -> std::vector<std::wstring>
         {
             std::vector<std::wstring> out;
+            if (!m_pal_query.empty())
+            {
+                std::vector<std::pair<bool, std::wstring>> hits;   // (starts-with, species)
+                for (const auto& s : m_pal_species)
+                {
+                    std::wstring low = display_name(s);
+                    for (auto& ch : low)
+                    {
+                        ch = static_cast<wchar_t>(std::towlower(ch));
+                    }
+                    const size_t at = low.find(m_pal_query);
+                    if (at == 0 || (at != std::wstring::npos && m_pal_query.size() > 1))
+                    {
+                        hits.emplace_back(at == 0, s);
+                    }
+                }
+                std::sort(hits.begin(), hits.end(), [this](const auto& a, const auto& b) {
+                    if (a.first != b.first)
+                    {
+                        return a.first;   // prefix matches first
+                    }
+                    return display_name(a.second) < display_name(b.second);
+                });
+                for (auto& h : hits)
+                {
+                    out.push_back(std::move(h.second));
+                }
+                return out;
+            }
             for (const auto& s : m_pal_species)
             {
-                if (!m_pal_filter.empty())
+                if (!m_pal_filter.empty() && m_pal_filter != L"*")
                 {
                     const std::wstring disp = display_name(s);
                     wchar_t first = disp.empty() ? L'?' : disp[0];
@@ -5078,19 +5155,62 @@ inline bool g_wp_on = false;
                 // Switch config-modal tab. Changes the row SET, so relayout (poll_panel
                 // returns right after, since this destroys the widgets it is iterating).
                 m_active_tab = id - kTabBase;
-                m_pal_filter.clear();   // a fresh tab starts with no letter filter
+                m_pal_filter.clear();   // a fresh tab starts with no letter filter / search
+                m_pal_query.clear();
+                m_pal_page = 0;
                 m_panel_relayout = true;
             }
             else if (id == kLetterAll)
             {
                 m_pal_filter.clear();
+                m_pal_query.clear();
+                m_pal_page = 0;
                 m_panel_relayout = true;
+            }
+            else if (id == kPalShowAll)
+            {
+                m_pal_query.clear();
+                m_pal_filter = L"*";
+                m_pal_page = 0;
+                m_panel_relayout = true;
+            }
+            else if (id == kPalBackspace)
+            {
+                if (!m_pal_query.empty())
+                {
+                    m_pal_query.pop_back();
+                    m_pal_page = 0;
+                    m_panel_relayout = true;
+                }
             }
             else if (id >= kLetterBase && id < kLetterBase + 26)
             {
-                m_pal_filter = std::wstring(1, static_cast<wchar_t>(L'A' + (id - kLetterBase)));
+                // On-screen search: each tapped letter appends (the first one lists that
+                // letter, like the old filter; more narrow it). Not the keyboard -- UE4SS
+                // key hooks only watch, so typed letters would also hit the game (M closes
+                // the map).
+                if (m_pal_query.size() < 24)
+                {
+                    m_pal_query.push_back(static_cast<wchar_t>(L'a' + (id - kLetterBase)));
+                }
+                m_pal_filter.clear();
+                m_pal_page = 0;
                 m_panel_relayout = true;
             }
+            else if (id == kPalPrev)
+            {
+                if (m_pal_page > 0)
+                {
+                    --m_pal_page;
+                    m_panel_relayout = true;
+                }
+            }
+            else if (id == kPalNext)
+            {
+                ++m_pal_page;   // layout clamps it to the last page
+                m_panel_relayout = true;
+            }
+            // kPalPageInfo: an inert label -- consumed, nothing to do.
             return true;
         }
 
@@ -6426,8 +6546,17 @@ inline bool g_wp_on = false;
             // STICKY (common case): the base we already built on is still the one on
             // screen -- keep it. Do NOT migrate while ours is visible; that is what
             // orphaned the old panel and cost two doubled legends.
+            const auto now = std::chrono::steady_clock::now();
             if (stored_root && stored_visible)
             {
+                if (m_swap_pending)
+                {
+                    Output::send<LogLevel::Default>(
+                        STR("[Lodestone] panel: map base flickered for {} ms -- held, no rebuild\n"),
+                        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_swap_since).count());
+                    m_swap_pending = false;
+                }
+                m_stored_seen_visible = now;
                 return stored_root;
             }
             // ORPHANED: our base is still alive but no longer visible, while a DIFFERENT
@@ -6439,15 +6568,40 @@ inline bool g_wp_on = false;
             // sweep keeps the move from doubling. Migrate ONLY when a base is actually
             // visible -- a bare invisible flicker mid-rebuild must not orphan us, so fall
             // through to holding the stored base in that case.
+            //
+            // HOLD A FLICKER (crash 2026-10-18): with the config modal open, our base read
+            // hidden and the other one visible for well under a second, then flipped back.
+            // Migrating on each flip rebuilt the panel twice in 0.7 s -- RemoveChild on one
+            // base, a fresh panel + modal on the other, then all of it again -- and the game
+            // crashed a second later. So when our base was on screen moments ago, a swap
+            // must hold for kSwapHold before we move; a real map rebuild outlasts that. A
+            // base that has been hidden a while (map closed, then reopened on a new base)
+            // still migrates at once, so the legend does not come back late.
             if (visible)
             {
                 if (stored_root)
                 {
+                    constexpr auto kSwapHold = std::chrono::milliseconds(1200);
+                    constexpr auto kRecentlyShown = std::chrono::seconds(2);
+                    if (now - m_stored_seen_visible < kRecentlyShown)
+                    {
+                        if (!m_swap_pending)
+                        {
+                            m_swap_pending = true;
+                            m_swap_since = now;
+                        }
+                        if (now - m_swap_since < kSwapHold)
+                        {
+                            return stored_root;   // hold: maybe a flicker
+                        }
+                    }
+                    m_swap_pending = false;
                     Output::send<LogLevel::Default>(
                         STR("[Lodestone] panel: map base swapped, migrating off the hidden one\n"));
                 }
                 return visible;
             }
+            m_swap_pending = false;
             if (stored_root)
             {
                 return stored_root;   // nothing visible this tick: hold, do not orphan
