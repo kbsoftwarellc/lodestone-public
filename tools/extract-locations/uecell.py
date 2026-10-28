@@ -12,7 +12,8 @@ def parse_names(d, count, off):
     return names
 
 def parse(pumap):
-    d = open(pumap, 'rb').read()
+    """pumap: a .umap/.uasset path, or its bytes (e.g. straight from palpak)."""
+    d = bytes(pumap) if isinstance(pumap, (bytes, bytearray)) else open(pumap, 'rb').read()
     i32 = lambda o: struct.unpack_from('<i', d, o)[0]
     i64 = lambda o: struct.unpack_from('<q', d, o)[0]
     assert struct.unpack_from('<I', d, 0)[0] == 0x9E2A83C1
@@ -46,3 +47,12 @@ def clsname(e, impnames):
     c = e['cls']
     if c < 0: return impnames[-c-1][1]
     return f"export#{c}"
+
+def first_triple(blob):
+    """First 3 little-endian doubles that look like a world position (the root
+    component's RelativeLocation, the first FVector in its unversioned body)."""
+    for o in range(0, len(blob)-23):
+        v = struct.unpack_from('<3d', blob, o)
+        if all(abs(x) < 2e6 and (x == 0 or abs(x) > 1e-3) for x in v) and any(x != 0 for x in v):
+            return v
+    return None

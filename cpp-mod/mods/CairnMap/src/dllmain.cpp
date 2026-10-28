@@ -2587,14 +2587,14 @@ inline bool g_wp_on = false;
                 v.push_back({PanelItem::Row, L"Eggs (nearby)", kEggLayer, Data::kEggIcon, 1.0f, 0.82f, 0.15f});
 
                 v.push_back({PanelItem::Header, L"ORES", 0});
-                for (int idx : {0, 1, 2, 3, 4, 6, 7, 8, 9, 18, 22})   // Coal..NightStone + Paldium + OreRocks
-                {
+                for (int idx : {0, 1, 2, 3, 4, 6, 7, 8, 9, 18, 22, 24})   // Coal..NightStone + Paldium
+                {                                                           // + OreRocks + Chromite
                     v.push_back(layer_row(idx));
                 }
 
                 v.push_back({PanelItem::Header, L"RESOURCES", 0});
-                for (int idx : {5, 10, 11, 15, 16, 19, 20, 21})   // Oil, DogCoin, Lotus, FruitTree,
-                {                                                 // CaveMushroom, RedBerry, Mushroom, SkillFruit
+                for (int idx : {5, 10, 11, 15, 16, 19, 20, 21, 23})   // Oil, DogCoin, Lotus, FruitTree, CaveMushroom,
+                {                                                     // RedBerry, Mushroom, SkillFruit, AncientBark
                     v.push_back(layer_row(idx));
                 }
 
