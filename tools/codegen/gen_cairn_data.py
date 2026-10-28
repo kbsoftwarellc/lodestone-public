@@ -96,6 +96,18 @@ LAYERS = [
     # nodes and actually drops Quartz, not iron. Dense -> default OFF; a plain grey dot (no
     # icon) so it reads as rock and stays distinct from the orange "Ore" layer.
     ("OreRocks",   "OreRocksLocations.json",     (0x9A, 0x9A, 0xA0, 0xFF), False, None),
+    # Appended 2026-10-28 (Kenny asked for both), from tools/extract-locations/extract_spawners.py
+    # with the SPEC surface cut (--min-z -15000). Drops read from each node blueprint's own
+    # DropItemParameter, not the base-production table:
+    #   AncientBark = BP_PalMapObjectSpawner_DamagableWood0001 -> BP_MapObject_DamagableWood0001
+    #                 (Wood_Ancient x30). Only 10 nodes in the world, one grove.
+    #   Chromite    = BP_PalMapObjectSpawner_RockStone18 -> BP_MapObject_DamagableRock0018
+    #                 (Chromium x50), the Feybreak rock shown in-game as plain "Rock" -- the
+    #                 "composite steel-mine mesh" OreRocks left out. 158 more sit inside Feybreak
+    #                 dungeon interiors (z ~ -50k) and are cut like every ore layer's.
+    # Default ON: asked for by name, and both are sparse.
+    ("AncientBark", "AncientBarkLocations.json", (0x8B, 0x5A, 0x2B, 0xFF), True, "T_itemicon_Material_Wood_Ancient"),
+    ("Chromite",   "ChromiteLocations.json",     (0x6E, 0x8F, 0xA8, 0xFF), True, "T_itemicon_Material_Chromium"),
 ]
 # Panel/legend display name = the resource's real in-game item name (from the pak's
 # DT_ItemNameText_Common), so the legend is not confusing -- e.g. the "Magma" layer is
@@ -114,6 +126,7 @@ DISPLAY = {
     "Outpost": "Enemy Camp", "FruitTree": "Kinship Peach", "CaveMushroom": "Cavern Mushroom",
     "Boss": "Field Boss", "Paldium": "Paldium Fragment", "RedBerry": "Red Berries",
     "Mushroom": "Mushroom", "SkillFruit": "Skill Fruit", "OreRocks": "Ore Rocks",
+    "AncientBark": "Ancient Bark", "Chromite": "Chromite",
 }
 EFFIGY_ICON = "T_itemicon_Relic"
 NOTE_ICON = "T_itemicon_Consume_TechnologyBook_G1"

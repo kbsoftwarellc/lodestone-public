@@ -1,16 +1,9 @@
 import os, sys, json, struct, collections
 sys.path.insert(0, os.environ['SCRATCH'])
-from uecell import parse
+from uecell import parse, first_triple
 
 W = os.environ['SCRATCH'] + '/world'
 PREFIXES = ('BP_PalMapObjectSpawner_', 'BP_LevelObject_OilField', 'BP_MapObject_DamagableRock')
-
-def first_triple(blob):
-    for o in range(0, len(blob)-23):
-        v = struct.unpack_from('<3d', blob, o)
-        if all(abs(x) < 2e6 and (x == 0 or abs(x) > 1e-3) for x in v) and any(x != 0 for x in v):
-            return v
-    return None
 
 out = collections.defaultdict(list)
 errors = 0

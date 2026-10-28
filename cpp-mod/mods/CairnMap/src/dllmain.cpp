@@ -191,6 +191,12 @@ inline bool g_compass = true;
 inline double g_compass_w = 720.0;    // strip width in screen px (CompassWidth)
 inline double g_compass_h = 44.0;     // strip height in screen px (CompassHeight)
 inline double g_compass_arc = 90.0;   // half-arc in degrees shown each side of centre (CompassArc)
+// Off-arc markers (CompassEdges). A layer whose nearest node fell outside the arc used to
+// vanish from the strip. With this on it parks just past the strip's end on the side you
+// would turn toward (« left / right »), or -- within CompassBehindArc degrees of straight
+// back -- in a "behind" row under the strip. Default on (Kenny asked for it).
+inline bool g_compass_edges = true;
+inline double g_compass_behind_arc = 30.0;   // half-cone around straight back (CompassBehindArc)
 // Degrees added to the camera forward bearing before placing markers (CompassYawOffset).
 // The whole strip rotates by this: 180 flips front<->back, ±90 rotates a quarter. Default 0
 // = markers centre on what you face. Exposed so a wrong reference is a settings edit, not a
@@ -342,6 +348,12 @@ inline bool g_wp_on = false;
         struct ParamsSetVisibility
         {
             uint8_t InVisibility{};
+        };
+        // UWidget::SetRenderOpacity(float). Multiplies over the brush tint, so it dims item
+        // art without touching the colour the marker was styled with.
+        struct ParamsSetRenderOpacity
+        {
+            float InOpacity{};
         };
         struct ParamsSetZOrder
         {
@@ -1807,7 +1819,16 @@ inline bool g_wp_on = false;
             // all -- the white squares on the strip.
             bool styled = false;
             Engine::FLinearColor_ cur_color{};   // last tint applied
+            float cur_opacity = 1.0f;            // dimmed while parked off the arc
         };
+        // Off-arc chrome, made on first use: a « / » chevron at each strip end and the
+        // "behind" caption beside the row under it. Shown only while their zone has markers.
+        UObject* m_compass_chev_l = nullptr;
+        UObject* m_compass_chev_l_slot = nullptr;
+        UObject* m_compass_chev_r = nullptr;
+        UObject* m_compass_chev_r_slot = nullptr;
+        UObject* m_compass_behind_cap = nullptr;
+        UObject* m_compass_behind_cap_slot = nullptr;
         std::vector<CompassMarker> m_compass_markers;   // pooled, reused each rebuild
         // layer id -> its OWN marker index. A marker belongs to ONE layer for the HUD's
         // life, so its icon never flips to another layer's art as arc membership / distance
@@ -2022,6 +2043,7 @@ inline bool g_wp_on = false;
             num(L"CompassWidth", g_compass_w, 200.0, 3000.0);
             num(L"CompassHeight", g_compass_h, 24.0, 120.0);
             num(L"CompassArc", g_compass_arc, 20.0, 180.0);
+            num(L"CompassBehindArc", g_compass_behind_arc, 0.0, 90.0);
             num(L"CompassYawOffset", g_compass_yaw_offset, -360.0, 360.0);
             num(L"CompassLiveSec", g_compass_live_sec, 1.0, 60.0);
             num(L"MinimapTerrainHeight", g_terrain_height, 1000.0, 200000.0);
@@ -2116,6 +2138,10 @@ inline bool g_wp_on = false;
             if (auto it = raw.find(L"CompassFlipEast"); it != raw.end())
             {
                 g_compass_flip_east = (it->second == L"1");
+            }
+            if (auto it = raw.find(L"CompassEdges"); it != raw.end())
+            {
+                g_compass_edges = (it->second == L"1");
             }
             if (auto it = raw.find(L"LuckySound"); it != raw.end())
             {
@@ -2292,6 +2318,11 @@ inline bool g_wp_on = false;
             f << L"CompassWidth=" << g_compass_w << L"\n";
             f << L"CompassHeight=" << g_compass_h << L"\n";
             f << L"CompassArc=" << g_compass_arc << L"\n";
+            f << L"# CompassEdges = 1 keeps markers outside the arc on screen: past the strip's\n";
+            f << L"# left/right end on the side to turn toward, or in a 'behind' row under\n";
+            f << L"# it when within CompassBehindArc degrees of straight back. 0 hides them.\n";
+            f << L"CompassEdges=" << (g_compass_edges ? 1 : 0) << L"\n";
+            f << L"CompassBehindArc=" << g_compass_behind_arc << L"\n";
             f << L"# CompassYawOffset = degrees added to the heading. If markers point the wrong\n";
             f << L"# way (walking to a centred marker moves you AWAY), set 180; ±90 rotates a\n";
             f << L"# quarter. Default 0. Restart to apply.\n";
@@ -2556,14 +2587,14 @@ inline bool g_wp_on = false;
                 v.push_back({PanelItem::Row, L"Eggs (nearby)", kEggLayer, Data::kEggIcon, 1.0f, 0.82f, 0.15f});
 
                 v.push_back({PanelItem::Header, L"ORES", 0});
-                for (int idx : {0, 1, 2, 3, 4, 6, 7, 8, 9, 18, 22})   // Coal..NightStone + Paldium + OreRocks
-                {
+                for (int idx : {0, 1, 2, 3, 4, 6, 7, 8, 9, 18, 22, 24})   // Coal..NightStone + Paldium
+                {                                                           // + OreRocks + Chromite
                     v.push_back(layer_row(idx));
                 }
 
                 v.push_back({PanelItem::Header, L"RESOURCES", 0});
-                for (int idx : {5, 10, 11, 15, 16, 19, 20, 21})   // Oil, DogCoin, Lotus, FruitTree,
-                {                                                 // CaveMushroom, RedBerry, Mushroom, SkillFruit
+                for (int idx : {5, 10, 11, 15, 16, 19, 20, 21, 23})   // Oil, DogCoin, Lotus, FruitTree, CaveMushroom,
+                {                                                     // RedBerry, Mushroom, SkillFruit, AncientBark
                     v.push_back(layer_row(idx));
                 }
 
@@ -7660,6 +7691,9 @@ inline bool g_wp_on = false;
             m_compass_center = nullptr;
             m_compass_markers.clear();
             m_compass_marker_ix.clear();
+            m_compass_chev_l = m_compass_chev_l_slot = nullptr;
+            m_compass_chev_r = m_compass_chev_r_slot = nullptr;
+            m_compass_behind_cap = m_compass_behind_cap_slot = nullptr;
         }
 
         // Has any terrain capture object we hold been collected? Never dereferences them
@@ -9381,6 +9415,15 @@ inline bool g_wp_on = false;
             // scripted).
             const double cam_bearing = 90.0 + yaw + g_compass_yaw_offset;
 
+            // Where a marker sits: on the arc, parked past the strip's left/right end, or in
+            // the row under it for things behind you (CompassEdges).
+            enum Zone : uint8_t
+            {
+                ZoneArc,
+                ZoneLeft,
+                ZoneRight,
+                ZoneBehind,
+            };
             struct Place
             {
                 double x;
@@ -9388,9 +9431,16 @@ inline bool g_wp_on = false;
                 const wchar_t* icon;
                 Engine::FLinearColor_ color;
                 int layer;
+                Zone zone = ZoneArc;
+                double rel = 0.0;       // camera-relative bearing, orders the off-arc rows
+                double y = -7.0;        // icon centre, from the strip's vertical centre
+                double label_y = 11.0;  // distance text centre
+                bool skip = false;      // over its zone's cap
             };
             std::vector<Place> places;
             int enabled_seen = 0, arc_culled = 0;   // dev: why the strip is empty
+            const bool edges = g_compass_edges && arc < 180.0;
+            const double back = std::clamp(g_compass_behind_arc, 0.0, 90.0);
             // Build the per-marker debug text only on the frame that will print it --
             // it used to be formatted for every marker every frame and thrown away.
             const bool dbg_due = g_debug && now >= m_next_compass_dbg;
@@ -9425,28 +9475,148 @@ inline bool g_wp_on = false;
                     swprintf(b, 96, L"%ls(wb=%.0f rel=%.0f d=%.0f) ", layer_key(layer_id), wb0, rel, n.dist_uu);
                     dbg += b;
                 }
+                Zone zone = ZoneArc;
                 if (rel < -arc || rel > arc)
                 {
                     ++arc_culled;
-                    continue;   // behind you / outside the shown arc
+                    if (!edges)
+                    {
+                        continue;   // behind you / outside the shown arc
+                    }
+                    zone = (std::abs(rel) >= 180.0 - back) ? ZoneBehind : (rel < 0.0 ? ZoneLeft : ZoneRight);
                 }
-                places.push_back({half + rel * kpx, n.dist_uu, n.icon, n.color, layer_id});
-            }
-            if (dbg_due)
-            {
-                m_next_compass_dbg = now + std::chrono::milliseconds(3000);
-                Output::send<LogLevel::Default>(
-                    STR("[Lodestone] compass: nearest={} enabled={} placed={} arc-culled={} arc=±{:.0f} "
-                        "yaw={:.0f} | {}\n"),
-                    m_nearest.size(), enabled_seen, places.size(), arc_culled, arc, yaw, dbg.c_str());
+                places.push_back({half + rel * kpx, n.dist_uu, n.icon, n.color, layer_id, zone, rel});
             }
             // Nearest last, so a closer marker draws over a farther one at the same spot.
             std::sort(places.begin(), places.end(),
                       [](const Place& a, const Place& b) { return a.dist > b.dist; });
 
+            // Lay out the off-arc zones. Order still means direction: each side row runs
+            // outward from the bar in the order you would turn to face it, and the behind
+            // row reads like a rear-view mirror (behind-left on the left). Too many in one
+            // zone keeps the nearest few -- one row must not run across the screen.
+            constexpr size_t kSideMax = 6, kBehindMax = 8;
+            const double step = std::max(isz + 12.0, 36.0);
+            const double edge_gap = 24.0;   // room for the chevron between the bar and the row
+            const double row_y = g_compass_h / 2.0 + 4.0 + isz / 2.0;
+            std::vector<size_t> zl, zr, zb;
+            for (size_t i = 0; i < places.size(); ++i)
+            {
+                switch (places[i].zone)
+                {
+                case ZoneLeft:
+                    zl.push_back(i);
+                    break;
+                case ZoneRight:
+                    zr.push_back(i);
+                    break;
+                case ZoneBehind:
+                    zb.push_back(i);
+                    break;
+                default:
+                    break;
+                }
+            }
+            auto cap = [&](std::vector<size_t>& z, size_t max) {
+                if (z.size() <= max)
+                {
+                    return;
+                }
+                std::sort(z.begin(), z.end(), [&](size_t a, size_t b) { return places[a].dist < places[b].dist; });
+                for (size_t i = max; i < z.size(); ++i)
+                {
+                    places[z[i]].skip = true;
+                }
+                z.resize(max);
+            };
+            auto by_turn = [&](size_t a, size_t b) { return std::abs(places[a].rel) < std::abs(places[b].rel); };
+            cap(zl, kSideMax);
+            cap(zr, kSideMax);
+            cap(zb, kBehindMax);
+            std::sort(zl.begin(), zl.end(), by_turn);
+            std::sort(zr.begin(), zr.end(), by_turn);
+            for (size_t i = 0; i < zl.size(); ++i)
+            {
+                places[zl[i]].x = -(edge_gap + isz / 2.0 + static_cast<double>(i) * step);
+            }
+            for (size_t i = 0; i < zr.size(); ++i)
+            {
+                places[zr[i]].x = g_compass_w + edge_gap + isz / 2.0 + static_cast<double>(i) * step;
+            }
+            // Behind: -(180+rel) for behind-left, 180-rel for behind-right -> left to right.
+            auto mirror = [](double rel) { return rel < 0.0 ? -(180.0 + rel) : 180.0 - rel; };
+            std::sort(zb.begin(), zb.end(),
+                      [&](size_t a, size_t b) { return mirror(places[a].rel) < mirror(places[b].rel); });
+            const double row_left = half - (static_cast<double>(zb.size()) - 1.0) / 2.0 * step;
+            for (size_t i = 0; i < zb.size(); ++i)
+            {
+                Place& p = places[zb[i]];
+                p.x = row_left + static_cast<double>(i) * step;
+                p.y = row_y;
+                p.label_y = row_y + 18.0;
+            }
+            // Chevrons + caption: lazily made TextBlocks, shown only while their zone is used.
+            auto chrome = [&](UObject*& w, UObject*& slot, const wchar_t* text, double scale, float cx, float cy,
+                              float width, bool show) {
+                if (!w && show)
+                {
+                    FStaticConstructObjectParameters params{txt_class, m_compass_canvas};
+                    UObject* t = UObjectGlobals::StaticConstructObject(params);
+                    Engine::ParamsAddChildToCanvas a{t, nullptr};
+                    if (!t || !Engine::call(m_compass_canvas, L"AddChildToCanvas", a) || !a.ReturnValue)
+                    {
+                        return;
+                    }
+                    w = t;
+                    slot = a.ReturnValue;
+                    Engine::ParamsSetAnchors an{0, 0.5, 0, 0.5};
+                    Engine::call(slot, L"SetAnchors", an);
+                    Engine::ParamsSetAlignment al{{0.5, 0.5}};
+                    Engine::call(slot, L"SetAlignment", al);
+                    Engine::ParamsSetJustification j{1};   // centre in its slot
+                    Engine::call(w, L"SetJustification", j);
+                    Engine::ParamsSetTextColor tc{{Style::kAccentR, Style::kAccentG, Style::kAccentB, 0.95f}, 0};
+                    Engine::call(w, L"SetColorAndOpacity", tc);
+                    Engine::ParamsSetRenderScale rs{{scale, scale}};
+                    Engine::call(w, L"SetRenderScale", rs);
+                    Engine::ParamsSetText st{FText(text)};
+                    Engine::call(w, L"SetText", st);
+                }
+                if (!w)
+                {
+                    return;
+                }
+                if (show)
+                {
+                    Engine::ParamsSetOffsets o{cx, cy, width, 30.0f};
+                    Engine::call(slot, L"SetOffsets", o);
+                }
+                Engine::ParamsSetVisibility v{show ? Engine::Vis_HitTestInvisible : Engine::Vis_Collapsed};
+                Engine::call(w, L"SetVisibility", v);
+            };
+            chrome(m_compass_chev_l, m_compass_chev_l_slot, L"«", 0.8, static_cast<float>(-edge_gap / 2.0), -9.0f,
+                   30.0f, !zl.empty());
+            chrome(m_compass_chev_r, m_compass_chev_r_slot, L"»", 0.8,
+                   static_cast<float>(g_compass_w + edge_gap / 2.0), -9.0f, 30.0f, !zr.empty());
+            chrome(m_compass_behind_cap, m_compass_behind_cap_slot, L"behind", 0.5,
+                   static_cast<float>(row_left - isz / 2.0 - 24.0), static_cast<float>(row_y), 90.0f, !zb.empty());
+            if (dbg_due)
+            {
+                m_next_compass_dbg = now + std::chrono::milliseconds(3000);
+                Output::send<LogLevel::Default>(
+                    STR("[Lodestone] compass: nearest={} enabled={} placed={} arc-culled={} arc=±{:.0f} "
+                        "edges L/R/behind={}/{}/{} yaw={:.0f} | {}\n"),
+                    m_nearest.size(), enabled_seen, places.size(), arc_culled, arc, zl.size(), zr.size(),
+                    zb.size(), yaw, dbg.c_str());
+            }
+
             std::unordered_set<int> shown;
             for (const auto& p : places)
             {
+                if (p.skip)
+                {
+                    continue;   // over its zone's cap: collapsed by the loop below
+                }
                 size_t idx = 0;
                 auto ixit = m_compass_marker_ix.find(p.layer);
                 if (ixit != m_compass_marker_ix.end())
@@ -9538,9 +9708,22 @@ inline bool g_wp_on = false;
                     m.cur_color = p.color;
                     m.styled = true;
                 }
-                Engine::ParamsSetOffsets io{static_cast<float>(p.x), -7.0f, static_cast<float>(isz),
+                Engine::ParamsSetOffsets io{static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(isz),
                                             static_cast<float>(isz)};
                 Engine::call(m.icon_slot, L"SetOffsets", io);
+                // Off the arc reads as "not in view": dimmed, so it never passes for a target
+                // you are facing. Only re-set on a change of zone.
+                const float opacity = (p.zone == ZoneArc) ? 1.0f : 0.7f;
+                if (m.cur_opacity != opacity)
+                {
+                    Engine::ParamsSetRenderOpacity ro{opacity};
+                    Engine::call(m.icon, L"SetRenderOpacity", ro);
+                    if (m.label)
+                    {
+                        Engine::call(m.label, L"SetRenderOpacity", ro);
+                    }
+                    m.cur_opacity = opacity;
+                }
                 Engine::ParamsSetVisibility iv{Engine::Vis_HitTestInvisible};
                 Engine::call(m.icon, L"SetVisibility", iv);
                 if (m.label && m.label_slot)
@@ -9561,7 +9744,7 @@ inline bool g_wp_on = false;
                         Engine::call(m.label, L"SetText", st);
                         m.cur_text = buf;
                     }
-                    Engine::ParamsSetOffsets lo{static_cast<float>(p.x), 11.0f, 38.0f, 12.0f};
+                    Engine::ParamsSetOffsets lo{static_cast<float>(p.x), static_cast<float>(p.label_y), 38.0f, 12.0f};
                     Engine::call(m.label_slot, L"SetOffsets", lo);
                     Engine::ParamsSetVisibility lv{Engine::Vis_HitTestInvisible};
                     Engine::call(m.label, L"SetVisibility", lv);
