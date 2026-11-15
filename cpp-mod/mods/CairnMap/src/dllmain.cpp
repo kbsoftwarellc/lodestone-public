@@ -574,6 +574,25 @@ inline bool g_wp_on = false;
             Vis_SelfHitTestInvisible = 4,
         };
 
+        // call() for a UFunction whose parameter layout has NOT been checked against this
+        // build: refuses (false) when the engine's ParmsSize is larger than our struct, so a
+        // wrong guess can never let ProcessEvent write past it.
+        template <typename Params>
+        auto call_sized(UObject* obj, const wchar_t* fn_name, Params& params) -> bool
+        {
+            if (!obj)
+            {
+                return false;
+            }
+            UFunction* fn = obj->GetFunctionByNameInChain(FName(fn_name, FNAME_Find));
+            if (!fn || fn->GetParmsSize() > sizeof(Params))
+            {
+                return false;
+            }
+            obj->ProcessEvent(fn, &params);
+            return true;
+        }
+
         template <typename Params>
         auto call(UObject* obj, const wchar_t* fn_name, Params& params) -> bool
         {
@@ -1829,6 +1848,20 @@ inline bool g_wp_on = false;
         UObject* m_compass_chev_r_slot = nullptr;
         UObject* m_compass_behind_cap = nullptr;
         UObject* m_compass_behind_cap_slot = nullptr;
+        // Last state pushed to each chrome widget, so an unchanged frame makes no reflected
+        // calls; `failed` stops a canvas that refused the child from orphaning a new
+        // TextBlock every tick. Index: 0 = «, 1 = », 2 = "behind".
+        struct ChromeState
+        {
+            bool shown = false;
+            bool failed = false;
+            float x = -1e9f, y = -1e9f;
+        };
+        ChromeState m_compass_chrome[3]{};
+        // Screen size in Slate units (viewport px / DPI scale), for keeping the off-arc rows
+        // on screen. 0 = unknown (query failed) -> rows are placed unclamped, as before.
+        double m_vp_w = 0.0, m_vp_h = 0.0;
+        std::chrono::steady_clock::time_point m_next_vp_check{};
         std::vector<CompassMarker> m_compass_markers;   // pooled, reused each rebuild
         // layer id -> its OWN marker index. A marker belongs to ONE layer for the HUD's
         // life, so its icon never flips to another layer's art as arc membership / distance
@@ -2539,6 +2572,9 @@ inline bool g_wp_on = false;
             // A wide Pill spans the full card width instead of joining the 2-column grid
             // (the effigy / pal layer-toggle summary rows, which sit above their picks).
             bool wide = false;
+            // Inert: drawn dimmed and its click does nothing (the page-info line, Prev on the
+            // first page, Next on the last), so a dead control does not look live.
+            bool inert = false;
         };
 
         // A toggle row for a kLayers entry, carrying what its swatch needs.
@@ -2711,8 +2747,12 @@ inline bool g_wp_on = false;
                             {
                                 continue;
                             }
+                            // Highlight the letter tapped last (with one letter, that is the
+                            // starts-with filter -- the old rail's active letter).
+                            const bool sel = !m_pal_query.empty() &&
+                                             m_pal_query.back() == static_cast<wchar_t>(L'a' + i);
                             v.push_back({PanelItem::Row, kAZ[i], kLetterBase + i, nullptr, 0.0f, 0.0f, 0.0f,
-                                         PanelItem::Chip, false});
+                                         PanelItem::Chip, sel});
                         }
                         if (!m_pal_query.empty())
                         {
@@ -2753,15 +2793,20 @@ inline bool g_wp_on = false;
                                                 L" Pals"));
                             PanelItem info{PanelItem::Row, m_pal_row_labels.back().c_str(), kPalPageInfo, nullptr,
                                            0.0f, 0.0f, 0.0f, PanelItem::Pick, false};
-                            info.wide = true;   // full width: also closes the 2-up grid so Prev/Next pair below
+                            info.wide = true;
+                            info.inert = true;   // full width: also closes the 2-up grid so Prev/Next pair below
                             v.push_back(info);
                         }
                         if (pages > 1)
                         {
-                            v.push_back({PanelItem::Row, L"< Prev", kPalPrev, nullptr, 0.0f, 0.0f, 0.0f,
-                                         PanelItem::Pick, false});
-                            v.push_back({PanelItem::Row, L"Next >", kPalNext, nullptr, 0.0f, 0.0f, 0.0f,
-                                         PanelItem::Pick, false});
+                            PanelItem prev{PanelItem::Row, L"< Prev", kPalPrev, nullptr, 0.0f, 0.0f, 0.0f,
+                                           PanelItem::Pick, false};
+                            prev.inert = m_pal_page == 0;
+                            v.push_back(prev);
+                            PanelItem next{PanelItem::Row, L"Next >", kPalNext, nullptr, 0.0f, 0.0f, 0.0f,
+                                           PanelItem::Pick, false};
+                            next.inert = m_pal_page + 1 >= pages;
+                            v.push_back(next);
                         }
                         // Diagnostic: the wild-spawner set has ~482 entries and one letter
                         // clustered to ~197. Log the true count so the pollution can be
@@ -5064,13 +5109,24 @@ inline bool g_wp_on = false;
         // variant), the ones that start with it first. Filter "*" or empty = all.
         auto filtered_species() const -> std::vector<std::wstring>
         {
-            std::vector<std::wstring> out;
+            // Each species' display name is looked up ONCE, then sorted by that key: the
+            // comparator used to call display_name (a map find + wstring copy, and a
+            // lowercase pass on the search path) on every comparison, several times per
+            // Pal-tab click on the game thread.
+            struct Hit
+            {
+                bool prefix;          // search: name starts with the query (listed first)
+                std::wstring name;    // display name the list is sorted by
+                const std::wstring* species;
+            };
+            std::vector<Hit> hits;
+            hits.reserve(m_pal_species.size());
             if (!m_pal_query.empty())
             {
-                std::vector<std::pair<bool, std::wstring>> hits;   // (starts-with, species)
                 for (const auto& s : m_pal_species)
                 {
-                    std::wstring low = display_name(s);
+                    std::wstring disp = display_name(s);
+                    std::wstring low = disp;
                     for (auto& ch : low)
                     {
                         ch = static_cast<wchar_t>(std::towlower(ch));
@@ -5078,41 +5134,43 @@ inline bool g_wp_on = false;
                     const size_t at = low.find(m_pal_query);
                     if (at == 0 || (at != std::wstring::npos && m_pal_query.size() > 1))
                     {
-                        hits.emplace_back(at == 0, s);
+                        hits.push_back({at == 0, std::move(disp), &s});
                     }
                 }
-                std::sort(hits.begin(), hits.end(), [this](const auto& a, const auto& b) {
-                    if (a.first != b.first)
-                    {
-                        return a.first;   // prefix matches first
-                    }
-                    return display_name(a.second) < display_name(b.second);
-                });
-                for (auto& h : hits)
-                {
-                    out.push_back(std::move(h.second));
-                }
-                return out;
             }
-            for (const auto& s : m_pal_species)
+            else
             {
-                if (!m_pal_filter.empty() && m_pal_filter != L"*")
+                for (const auto& s : m_pal_species)
                 {
-                    const std::wstring disp = display_name(s);
-                    wchar_t first = disp.empty() ? L'?' : disp[0];
-                    if (first >= L'a' && first <= L'z')
+                    std::wstring disp = display_name(s);
+                    if (!m_pal_filter.empty() && m_pal_filter != L"*")
                     {
-                        first = static_cast<wchar_t>(first - 32);   // uppercase
+                        wchar_t first = disp.empty() ? L'?' : disp[0];
+                        if (first >= L'a' && first <= L'z')
+                        {
+                            first = static_cast<wchar_t>(first - 32);   // uppercase
+                        }
+                        if (std::wstring(1, first) != m_pal_filter)
+                        {
+                            continue;
+                        }
                     }
-                    if (std::wstring(1, first) != m_pal_filter)
-                    {
-                        continue;
-                    }
+                    hits.push_back({true, std::move(disp), &s});
                 }
-                out.push_back(s);
             }
-            std::sort(out.begin(), out.end(),
-                      [this](const std::wstring& a, const std::wstring& b) { return display_name(a) < display_name(b); });
+            std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) {
+                if (a.prefix != b.prefix)
+                {
+                    return a.prefix;   // prefix matches first
+                }
+                return a.name < b.name;
+            });
+            std::vector<std::wstring> out;
+            out.reserve(hits.size());
+            for (const auto& h : hits)
+            {
+                out.push_back(*h.species);
+            }
             return out;
         }
 
@@ -5191,19 +5249,28 @@ inline bool g_wp_on = false;
                 m_pal_page = 0;
                 m_panel_relayout = true;
             }
+            // Every Pal-tab control below relayouts (ClearChildren + ~50 new Slate widgets)
+            // ONLY when it changes what the list shows -- a dead click rebuilding the card is
+            // the repeated-rebuild pattern update_selection_visuals exists to avoid.
             else if (id == kLetterAll)
             {
-                m_pal_filter.clear();
-                m_pal_query.clear();
-                m_pal_page = 0;
-                m_panel_relayout = true;
+                if (!m_pal_filter.empty() || !m_pal_query.empty() || m_pal_page != 0)
+                {
+                    m_pal_filter.clear();
+                    m_pal_query.clear();
+                    m_pal_page = 0;
+                    m_panel_relayout = true;
+                }
             }
             else if (id == kPalShowAll)
             {
-                m_pal_query.clear();
-                m_pal_filter = L"*";
-                m_pal_page = 0;
-                m_panel_relayout = true;
+                if (!m_pal_query.empty() || m_pal_filter != L"*" || m_pal_page != 0)
+                {
+                    m_pal_query.clear();
+                    m_pal_filter = L"*";
+                    m_pal_page = 0;
+                    m_panel_relayout = true;
+                }
             }
             else if (id == kPalBackspace)
             {
@@ -5220,13 +5287,13 @@ inline bool g_wp_on = false;
                 // letter, like the old filter; more narrow it). Not the keyboard -- UE4SS
                 // key hooks only watch, so typed letters would also hit the game (M closes
                 // the map).
-                if (m_pal_query.size() < 24)
+                if (m_pal_query.size() < 24)   // at the cap a tap changes nothing: no rebuild
                 {
                     m_pal_query.push_back(static_cast<wchar_t>(L'a' + (id - kLetterBase)));
+                    m_pal_filter.clear();
+                    m_pal_page = 0;
+                    m_panel_relayout = true;
                 }
-                m_pal_filter.clear();
-                m_pal_page = 0;
-                m_panel_relayout = true;
             }
             else if (id == kPalPrev)
             {
@@ -5238,8 +5305,13 @@ inline bool g_wp_on = false;
             }
             else if (id == kPalNext)
             {
-                ++m_pal_page;   // layout clamps it to the last page
-                m_panel_relayout = true;
+                const size_t n = filtered_species().size();
+                const size_t pages = n == 0 ? 1 : (n + kPalListMax - 1) / kPalListMax;
+                if (m_pal_page + 1 < pages)
+                {
+                    ++m_pal_page;
+                    m_panel_relayout = true;
+                }
             }
             // kPalPageInfo: an inert label -- consumed, nothing to do.
             return true;
@@ -6612,31 +6684,35 @@ inline bool g_wp_on = false;
             {
                 if (stored_root)
                 {
+                    // A hold starts only if our base was on screen moments ago, and once
+                    // started it runs its full kSwapHold from the FIRST sighting --
+                    // "nothing visible" ticks in between neither restart nor cut it short,
+                    // so a real rebuild always migrates kSwapHold after it began.
                     constexpr auto kSwapHold = std::chrono::milliseconds(1200);
                     constexpr auto kRecentlyShown = std::chrono::seconds(2);
-                    if (now - m_stored_seen_visible < kRecentlyShown)
+                    if (!m_swap_pending && now - m_stored_seen_visible < kRecentlyShown)
                     {
-                        if (!m_swap_pending)
-                        {
-                            m_swap_pending = true;
-                            m_swap_since = now;
-                        }
-                        if (now - m_swap_since < kSwapHold)
-                        {
-                            return stored_root;   // hold: maybe a flicker
-                        }
+                        m_swap_pending = true;
+                        m_swap_since = now;
+                    }
+                    if (m_swap_pending && now - m_swap_since < kSwapHold)
+                    {
+                        return stored_root;   // hold: maybe a flicker
                     }
                     m_swap_pending = false;
                     Output::send<LogLevel::Default>(
                         STR("[Lodestone] panel: map base swapped, migrating off the hidden one\n"));
                 }
+                m_swap_pending = false;   // (no stored base: a stale hold must not carry over)
                 return visible;
             }
-            m_swap_pending = false;
             if (stored_root)
             {
-                return stored_root;   // nothing visible this tick: hold, do not orphan
+                // nothing visible this tick: hold, do not orphan. A pending swap hold keeps
+                // its start time (resetting it here made the hold restart on every gap).
+                return stored_root;
             }
+            m_swap_pending = false;
             return invisible;   // may be null: caller waits rather than guessing
         }
 
@@ -7213,6 +7289,12 @@ inline bool g_wp_on = false;
                         lg = 1.0f;
                         lb = 1.0f;
                     }
+                    if (it.inert)
+                    {
+                        lr = 0.42f;
+                        lg = 0.45f;
+                        lb = 0.50f;
+                    }
                     const int font = it.style == PanelItem::Chip ? 10 : (button_like ? 12 : 11);
                     const double lx = (it.style == PanelItem::Pick) ? s.x + 10.0 + icon_pad : s.x + 3.0;
                     const double lw = s.w - ((it.style == PanelItem::Pick) ? 16.0 + icon_pad : 6.0);
@@ -7694,6 +7776,10 @@ inline bool g_wp_on = false;
             m_compass_chev_l = m_compass_chev_l_slot = nullptr;
             m_compass_chev_r = m_compass_chev_r_slot = nullptr;
             m_compass_behind_cap = m_compass_behind_cap_slot = nullptr;
+            for (auto& c : m_compass_chrome)
+            {
+                c = ChromeState{};
+            }
         }
 
         // Has any terrain capture object we hold been collected? Never dereferences them
@@ -9498,7 +9584,7 @@ inline bool g_wp_on = false;
             constexpr size_t kSideMax = 6, kBehindMax = 8;
             const double step = std::max(isz + 12.0, 36.0);
             const double edge_gap = 24.0;   // room for the chevron between the bar and the row
-            const double row_y = g_compass_h / 2.0 + 4.0 + isz / 2.0;
+            const double margin = 6.0;      // keep clear of the screen edge
             std::vector<size_t> zl, zr, zb;
             for (size_t i = 0; i < places.size(); ++i)
             {
@@ -9517,6 +9603,7 @@ inline bool g_wp_on = false;
                     break;
                 }
             }
+            size_t capped = 0;
             auto cap = [&](std::vector<size_t>& z, size_t max) {
                 if (z.size() <= max)
                 {
@@ -9526,28 +9613,112 @@ inline bool g_wp_on = false;
                 for (size_t i = max; i < z.size(); ++i)
                 {
                     places[z[i]].skip = true;
+                    ++capped;
                 }
                 z.resize(max);
             };
             auto by_turn = [&](size_t a, size_t b) { return std::abs(places[a].rel) < std::abs(places[b].rel); };
-            cap(zl, kSideMax);
-            cap(zr, kSideMax);
+
+            // Room around the strip, from its anchor/offset and the screen size (refreshed
+            // every 2 s). Unknown screen size = unlimited room = the old placement.
+            if (edges && now >= m_next_vp_check)
+            {
+                m_next_vp_check = now + std::chrono::seconds(2);
+                auto* wll = UObjectGlobals::StaticFindObject(nullptr, nullptr,
+                                                             STR("/Script/UMG.Default__WidgetLayoutLibrary"));
+                UObject* ctx = live_mm_pc();
+                struct
+                {
+                    UObject* WorldContextObject{};
+                    Engine::FVector2D_ ReturnValue{};
+                } vs{ctx, {}};
+                struct
+                {
+                    UObject* WorldContextObject{};
+                    float ReturnValue{};
+                } sc{ctx, 0.0f};
+                if (wll && ctx && Engine::call_sized(wll, L"GetViewportSize", vs) &&
+                    Engine::call_sized(wll, L"GetViewportScale", sc) && sc.ReturnValue > 0.01f &&
+                    vs.ReturnValue.X > 1.0 && vs.ReturnValue.Y > 1.0)
+                {
+                    m_vp_w = vs.ReturnValue.X / sc.ReturnValue;
+                    m_vp_h = vs.ReturnValue.Y / sc.ReturnValue;
+                }
+            }
+            const double kHuge = 1e9;
+            double room_l = kHuge, room_r = kHuge, room_below = kHuge, room_above = kHuge;
+            if (m_vp_w > 0.0 && m_vp_h > 0.0)
+            {
+                const double sl = g_compass_ax == 0.0   ? g_compass_ox
+                                  : g_compass_ax == 1.0 ? m_vp_w - g_compass_ox - g_compass_w
+                                                        : (m_vp_w - g_compass_w) / 2.0;
+                const double st = g_compass_ay == 0.0   ? g_compass_oy
+                                  : g_compass_ay == 1.0 ? m_vp_h - g_compass_oy - g_compass_h
+                                                        : (m_vp_h - g_compass_h) / 2.0;
+                room_l = sl;
+                room_r = m_vp_w - sl - g_compass_w;
+                room_above = st;
+                room_below = m_vp_h - st - g_compass_h;
+            }
+            // How many markers fit in a row running outward from a strip end.
+            auto fit_out = [&](double room) -> size_t {
+                const double need = edge_gap + isz + margin;
+                return room < need ? 0 : static_cast<size_t>((room - need) / step) + 1;
+            };
+            // The row under the strip (behind markers, and a side that has no room outside).
+            // Flipped ABOVE the strip when a bottom-anchored strip leaves no room below.
+            const double under_need = 4.0 + isz + 18.0 + 8.0 + margin;   // icon + distance text
+            const bool row_up = room_below < under_need && room_above >= under_need;
+            const double row_y = row_up ? -(g_compass_h / 2.0 + 30.0) : g_compass_h / 2.0 + 4.0 + isz / 2.0;
+            const double chev_y = -9.0;
+
             cap(zb, kBehindMax);
-            std::sort(zl.begin(), zl.end(), by_turn);
-            std::sort(zr.begin(), zr.end(), by_turn);
-            for (size_t i = 0; i < zl.size(); ++i)
-            {
-                places[zl[i]].x = -(edge_gap + isz / 2.0 + static_cast<double>(i) * step);
-            }
-            for (size_t i = 0; i < zr.size(); ++i)
-            {
-                places[zr[i]].x = g_compass_w + edge_gap + isz / 2.0 + static_cast<double>(i) * step;
-            }
-            // Behind: -(180+rel) for behind-left, 180-rel for behind-right -> left to right.
-            auto mirror = [](double rel) { return rel < 0.0 ? -(180.0 + rel) : 180.0 - rel; };
-            std::sort(zb.begin(), zb.end(),
-                      [&](size_t a, size_t b) { return mirror(places[a].rel) < mirror(places[b].rel); });
+            std::sort(zb.begin(), zb.end(), [&](size_t a, size_t b) {
+                auto mirror = [](double rel) { return rel < 0.0 ? -(180.0 + rel) : 180.0 - rel; };
+                return mirror(places[a].rel) < mirror(places[b].rel);
+            });
             const double row_left = half - (static_cast<double>(zb.size()) - 1.0) / 2.0 * step;
+            // Space at each end of the under-row that the behind row leaves free.
+            const double under_free = zb.empty() ? half : row_left - isz / 2.0 - 8.0;
+            auto fit_under = [&]() -> size_t {
+                return under_free < isz + 2.0 ? 0 : static_cast<size_t>((under_free - isz - 2.0) / step) + 1;
+            };
+            // A side goes outside if its whole (capped) row fits there, else folds onto the
+            // under-row at its own end, running inward. Either way order = turn order.
+            bool fold_l = false, fold_r = false;
+            auto lay_side = [&](std::vector<size_t>& z, bool left, double room, bool& folded) {
+                cap(z, kSideMax);
+                std::sort(z.begin(), z.end(), by_turn);
+                const size_t out = fit_out(room);
+                if (z.size() <= out)
+                {
+                    for (size_t i = 0; i < z.size(); ++i)
+                    {
+                        const double d = edge_gap + isz / 2.0 + static_cast<double>(i) * step;
+                        places[z[i]].x = left ? -d : g_compass_w + d;
+                    }
+                    return;
+                }
+                folded = true;
+                // nearest-turn first, so a fold that cannot hold them all drops the far turns
+                const size_t keep = std::min(z.size(), fit_under());
+                for (size_t i = keep; i < z.size(); ++i)
+                {
+                    places[z[i]].skip = true;
+                    ++capped;
+                }
+                z.resize(keep);
+                for (size_t i = 0; i < z.size(); ++i)
+                {
+                    Place& pl = places[z[i]];
+                    const double d = isz / 2.0 + 2.0 + static_cast<double>(i) * step;
+                    pl.x = left ? d : g_compass_w - d;
+                    pl.y = row_y;
+                    pl.label_y = row_y + 18.0;
+                }
+            };
+            lay_side(zl, true, room_l, fold_l);
+            lay_side(zr, false, room_r, fold_r);
             for (size_t i = 0; i < zb.size(); ++i)
             {
                 Place& p = places[zb[i]];
@@ -9556,19 +9727,23 @@ inline bool g_wp_on = false;
                 p.label_y = row_y + 18.0;
             }
             // Chevrons + caption: lazily made TextBlocks, shown only while their zone is used.
-            auto chrome = [&](UObject*& w, UObject*& slot, const wchar_t* text, double scale, float cx, float cy,
-                              float width, bool show) {
-                if (!w && show)
+            // Each pushes offsets/visibility only when they change.
+            auto chrome = [&](int which, UObject*& w, UObject*& slot, const wchar_t* text, double scale, float cx,
+                              float cy, float width, bool show) {
+                ChromeState& st = m_compass_chrome[which];
+                if (!w && show && !st.failed)
                 {
                     FStaticConstructObjectParameters params{txt_class, m_compass_canvas};
                     UObject* t = UObjectGlobals::StaticConstructObject(params);
                     Engine::ParamsAddChildToCanvas a{t, nullptr};
                     if (!t || !Engine::call(m_compass_canvas, L"AddChildToCanvas", a) || !a.ReturnValue)
                     {
+                        st.failed = true;   // retried when the strip is rebuilt
                         return;
                     }
                     w = t;
                     slot = a.ReturnValue;
+                    st = ChromeState{};
                     Engine::ParamsSetAnchors an{0, 0.5, 0, 0.5};
                     Engine::call(slot, L"SetAnchors", an);
                     Engine::ParamsSetAlignment al{{0.5, 0.5}};
@@ -9579,35 +9754,54 @@ inline bool g_wp_on = false;
                     Engine::call(w, L"SetColorAndOpacity", tc);
                     Engine::ParamsSetRenderScale rs{{scale, scale}};
                     Engine::call(w, L"SetRenderScale", rs);
-                    Engine::ParamsSetText st{FText(text)};
-                    Engine::call(w, L"SetText", st);
+                    Engine::ParamsSetText tx{FText(text)};
+                    Engine::call(w, L"SetText", tx);
+                    Engine::ParamsSetVisibility hv{Engine::Vis_Collapsed};
+                    Engine::call(w, L"SetVisibility", hv);
                 }
                 if (!w)
                 {
                     return;
                 }
-                if (show)
+                if (show && (cx != st.x || cy != st.y))
                 {
                     Engine::ParamsSetOffsets o{cx, cy, width, 30.0f};
                     Engine::call(slot, L"SetOffsets", o);
+                    st.x = cx;
+                    st.y = cy;
                 }
-                Engine::ParamsSetVisibility v{show ? Engine::Vis_HitTestInvisible : Engine::Vis_Collapsed};
-                Engine::call(w, L"SetVisibility", v);
+                if (show != st.shown)
+                {
+                    Engine::ParamsSetVisibility v{show ? Engine::Vis_HitTestInvisible : Engine::Vis_Collapsed};
+                    Engine::call(w, L"SetVisibility", v);
+                    st.shown = show;
+                }
             };
-            chrome(m_compass_chev_l, m_compass_chev_l_slot, L"«", 0.8, static_cast<float>(-edge_gap / 2.0), -9.0f,
-                   30.0f, !zl.empty());
-            chrome(m_compass_chev_r, m_compass_chev_r_slot, L"»", 0.8,
-                   static_cast<float>(g_compass_w + edge_gap / 2.0), -9.0f, 30.0f, !zr.empty());
-            chrome(m_compass_behind_cap, m_compass_behind_cap_slot, L"behind", 0.5,
-                   static_cast<float>(row_left - isz / 2.0 - 24.0), static_cast<float>(row_y), 90.0f, !zb.empty());
+            // A folded side's chevron moves onto the under-row, just inside its strip end.
+            chrome(0, m_compass_chev_l, m_compass_chev_l_slot, L"«", 0.8,
+                   static_cast<float>(-edge_gap / 2.0),
+                   static_cast<float>(fold_l ? row_y : chev_y), 30.0f, !zl.empty() && (!fold_l || room_l >= 20.0));
+            chrome(1, m_compass_chev_r, m_compass_chev_r_slot, L"»", 0.8,
+                   static_cast<float>(g_compass_w + edge_gap / 2.0), static_cast<float>(fold_r ? row_y : chev_y),
+                   30.0f, !zr.empty() && (!fold_r || room_r >= 20.0));
+            // "behind" caption: left of the behind row, or right of it if the left side folded
+            // onto the same row (they would overlap).
+            const double cap_x = fold_l ? row_left + (static_cast<double>(zb.size()) - 0.5) * step + 24.0
+                                        : row_left - isz / 2.0 - 24.0;
+            chrome(2, m_compass_behind_cap, m_compass_behind_cap_slot, L"behind", 0.5, static_cast<float>(cap_x),
+                   static_cast<float>(row_y), 90.0f, !zb.empty());
             if (dbg_due)
             {
                 m_next_compass_dbg = now + std::chrono::milliseconds(3000);
+                // off-arc = outside CompassArc (culled only when CompassEdges=0); capped =
+                // over a zone's limit or no room on screen, never drawn; drawn = on screen.
+                const size_t drawn = places.size() - capped;
                 Output::send<LogLevel::Default>(
-                    STR("[Lodestone] compass: nearest={} enabled={} placed={} arc-culled={} arc=±{:.0f} "
-                        "edges L/R/behind={}/{}/{} yaw={:.0f} | {}\n"),
-                    m_nearest.size(), enabled_seen, places.size(), arc_culled, arc, zl.size(), zr.size(),
-                    zb.size(), yaw, dbg.c_str());
+                    STR("[Lodestone] compass: nearest={} enabled={} drawn={} off-arc={} capped={} arc=±{:.0f} "
+                        "edges L/R/behind={}/{}/{}{}{}{} screen={:.0f}x{:.0f} yaw={:.0f} | {}\n"),
+                    m_nearest.size(), enabled_seen, drawn, arc_culled, capped, arc, zl.size(), zr.size(), zb.size(),
+                    fold_l ? STR(" foldL") : STR(""), fold_r ? STR(" foldR") : STR(""),
+                    row_up ? STR(" rowUp") : STR(""), m_vp_w, m_vp_h, yaw, dbg.c_str());
             }
 
             std::unordered_set<int> shown;
