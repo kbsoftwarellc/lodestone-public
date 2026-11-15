@@ -1,5 +1,7 @@
 import os, sys, json, struct, collections
 sys.path.insert(0, os.environ['SCRATCH'])
+# This tool's own uecell.py wins over any older copy left in $SCRATCH.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from uecell import parse, first_triple
 
 W = os.environ['SCRATCH'] + '/world'

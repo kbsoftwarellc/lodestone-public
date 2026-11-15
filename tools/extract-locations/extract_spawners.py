@@ -55,7 +55,15 @@ def walk(pak, patterns):
         if not fn.endswith(".umap"):
             continue
         stats["cells"] += 1
-        d, header, imps, exps = uecell.parse(pak.read_payload(files[fn]))
+        # One unreadable cell must not cost the whole run: skip it and count it, like
+        # extract_locations.py does.
+        try:
+            d, header, imps, exps = uecell.parse(pak.read_payload(files[fn]))
+        except Exception as e:
+            stats["errors"] += 1
+            if stats["errors"] <= 5:
+                print(f"warning: {fn}: {type(e).__name__}: {e}", file=sys.stderr)
+            continue
         targets = {}
         for i, e in enumerate(exps):
             c = e["cls"]
@@ -66,7 +74,13 @@ def walk(pak, patterns):
                 targets[i + 1] = cname[:-2]
         if not targets:
             continue
-        uexp = pak.read_payload(files[fn[:-len(".umap")] + ".uexp"])
+        try:
+            uexp = pak.read_payload(files[fn[:-len(".umap")] + ".uexp"])
+        except Exception as e:
+            stats["errors"] += 1
+            if stats["errors"] <= 5:
+                print(f"warning: {fn}: no readable .uexp ({type(e).__name__}: {e})", file=sys.stderr)
+            continue
         children = collections.defaultdict(list)
         for e in exps:
             if e["outer"] in targets:
@@ -101,7 +115,7 @@ def main():
     t = time.time()
     pak = palpak.Pak(args.pak, oodle=palpak.Oodle(args.oodle))
     raw, stats = walk(pak, patterns)
-    print(f"{stats['cells']} cells walked in {time.time() - t:.1f}s")
+    print(f"{stats['cells']} cells walked in {time.time() - t:.1f}s, {stats['errors']} errors")
 
     for p in patterns:
         if not any(fnmatch.fnmatchcase(c, p) for c in raw):
