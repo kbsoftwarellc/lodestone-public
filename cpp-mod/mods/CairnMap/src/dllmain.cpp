@@ -1645,7 +1645,6 @@ inline bool g_wp_on = false;
         UObject* m_card_slot = nullptr;
         std::wstring m_panel_root_name;
         // Map-base flicker hold (screen_canvas, crash 2026-10-18).
-        std::vector<LiveCand> m_frame_bases;   // this tick's MapFind::bases (set by tick_map)
         std::chrono::steady_clock::time_point m_stored_seen_visible{};   // last tick our base was on screen
         std::chrono::steady_clock::time_point m_swap_since{};            // when the current swap was first seen
         bool m_swap_pending = false;
@@ -3027,6 +3026,7 @@ inline bool g_wp_on = false;
         //
         // Lock order: m_state_mx, then m_live_mx. m_find_mx and m_known_mx are leaves:
         // nothing else is taken while either is held.
+        std::vector<LiveCand> m_frame_bases;   // this tick's MapFind::bases (set by tick_map)
         std::mutex m_find_mx;
         MapFind m_pub_find{};
         uint64_t m_pub_seq = 0;                       // bumped by every publish
