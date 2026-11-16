@@ -213,7 +213,7 @@ jobs:
           $inc += "/Ithird/zydis/include"
           $inc += "/Ithird/zydis/dependencies/zycore/include"
           mkdir out
-          cl /nologo /LD /std:c++latest /EHsc /MD /utf-8 /DNDEBUG /DFMT_HEADER_ONLY=1 /DUE_BUILD_SHIPPING=1 /DUBT_COMPILED_PLATFORM=Windows /DPLATFORM_WINDOWS=1 /D_WIN32_WINNT=0x0A00 /DWINVER=0x0A00 /DZYDIS_STATIC_BUILD /DZYCORE_STATIC_BUILD /DUNICODE /D_UNICODE `
+          cl /nologo /LD /std:c++latest /EHsc /MD /O2 /utf-8 /DNDEBUG /DFMT_HEADER_ONLY=1 /DUE_BUILD_SHIPPING=1 /DUBT_COMPILED_PLATFORM=Windows /DPLATFORM_WINDOWS=1 /D_WIN32_WINNT=0x0A00 /DWINVER=0x0A00 /DZYDIS_STATIC_BUILD /DZYCORE_STATIC_BUILD /DUNICODE /D_UNICODE `
              $inc cpp-mod/mods/CairnMap/src/dllmain.cpp `
              /Feout/main.dll /link UE4SS.lib
           Get-Item out/main.dll
