@@ -20,6 +20,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1644,6 +1645,7 @@ inline bool g_wp_on = false;
         UObject* m_card_slot = nullptr;
         std::wstring m_panel_root_name;
         // Map-base flicker hold (screen_canvas, crash 2026-10-18).
+        std::vector<LiveCand> m_frame_bases;   // this tick's MapFind::bases (set by tick_map)
         std::chrono::steady_clock::time_point m_stored_seen_visible{};   // last tick our base was on screen
         std::chrono::steady_clock::time_point m_swap_since{};            // when the current swap was first seen
         bool m_swap_pending = false;
@@ -1746,8 +1748,8 @@ inline bool g_wp_on = false;
         // SEH tripwire: counts access violations the tick_map guard swallowed. Silent in
         // the normal case; if a future teardown race faults, this surfaces it in the log
         // (from the C++ layer, since the __except scope may not hold C++ objects).
-        unsigned m_seh_hits = 0;
-        bool m_seh_new = false;
+        std::atomic<unsigned> m_seh_hits{0};   // atomics: the game-thread map driver and the
+        std::atomic<bool> m_seh_new{false};    // update thread's walks both report here
         // Toggle debounce (server crash from smash-clicking a dense layer). A single
         // toggle of a dense layer (~700 Chest dots) is fine -- the staged reveal budgets
         // it -- but a BURST of on/off clicks generated a storm of visibility/re-place
@@ -2952,9 +2954,24 @@ inline bool g_wp_on = false;
                     // alive on a ProcessEvent-not-available throw; SEH inside swallows an
                     // access violation from a freed object during world teardown.
                     minimap_frame();
+                    // Map overlay + panel, on this (the game) thread -- see m_find_mx.
+                    map_frame();
                 },
                 {false, false, STR("Lodestone"), STR("Minimap")});
             m_minimap_fast = true;
+            // Grace for the first fire: until then the update thread must not decide the
+            // game-thread driver is dead and drive the map itself.
+            m_last_map_frame.store(std::chrono::steady_clock::now().time_since_epoch().count());
+
+            // Map widget registry (see m_known_mx). Readonly post-hook: never alters the
+            // constructed object. FNAME_Add: the blueprint classes may not be loaded yet.
+            m_known_fname[0] = FName(STR("WBP_Map_Body_C"), FNAME_Add);
+            m_known_fname[1] = FName(STR("WBP_Map_Base_C"), FNAME_Add);
+            Unreal::Hook::RegisterStaticConstructObjectPostCallback(
+                [this](auto& data, const FStaticConstructObjectParameters&) {
+                    on_constructed(data.GetOriginalFunctionCallResult());
+                },
+                {false, true, STR("Lodestone"), STR("MapWidgets")});
         }
 
         auto on_update() -> void override
@@ -2993,7 +3010,192 @@ inline bool g_wp_on = false;
             int32_t body_idx = -1;
             int32_t mask_idx = -1;
             bool open = false;
+            // Every WBP_Map_Base_C instance (live when listed), for screen_canvas: gathered
+            // on the update thread so the game thread's panel code never walks.
+            std::vector<LiveCand> bases;
         };
+
+        // ---- Threading (2026-11-15) ---------------------------------------------------
+        // All map/panel/dot UMG work runs on the GAME thread (map_frame, from the EngineTick
+        // hook). It used to run on UE4SS's update thread, and both crashes after the state
+        // lock (10-18, 11-09) were the same shape: the update thread migrated + rebuilt the
+        // panel, then the game thread faulted ~1 s later with no Lodestone frame -- Slate
+        // reading widgets another thread was editing. The update thread keeps every
+        // object-array walk and PUBLISHES what it found (m_pub_*); the game thread only
+        // touches UMG. If the game-thread driver goes silent (the server EngineTick stall
+        // the compass fallback exists for), the update thread drives the map as before.
+        //
+        // Lock order: m_state_mx, then m_live_mx. m_find_mx and m_known_mx are leaves:
+        // nothing else is taken while either is held.
+        std::mutex m_find_mx;
+        MapFind m_pub_find{};
+        uint64_t m_pub_seq = 0;                       // bumped by every publish
+        uint64_t m_map_frame_seq = 0;                 // last publish the game thread consumed
+        std::chrono::steady_clock::time_point m_next_map_frame{};
+        std::atomic<long long> m_last_map_frame{0};   // game-thread map driver heartbeat
+        bool m_map_fallback = false;                  // update thread currently drives the map
+        std::atomic<long long> m_perf_map_frame_max_us{0};
+        // POI point lists walked on the update thread for poi_objects (see there).
+        std::vector<LiveCand> m_pub_poi[3];
+        std::chrono::steady_clock::time_point m_pub_poi_at[3]{};
+        // Map widget registry. A StaticConstructObject post-hook records every new
+        // WBP_Map_Body_C / WBP_Map_Base_C, so find_map and screen_canvas read a short list
+        // instead of walking the whole object array every 300 ms (find_map alone was
+        // 65-110 ms per walk and climbing). A safety walk still runs: every 60 s, or every
+        // 10 s while no visible map body is known, and every tick until the hook has fired.
+        std::mutex m_known_mx;
+        std::vector<LiveCand> m_known[2];             // 0 = map bodies, 1 = map bases
+        FName m_known_fname[2]{};
+        std::atomic<unsigned long long> m_constructs{0};   // construct-hook liveness
+        std::chrono::steady_clock::time_point m_next_safety_walk[2]{};
+        auto on_constructed(UObject* o) -> void
+        {
+            // Hot path: runs for EVERY object the game constructs. No allocation, no
+            // reflection -- a class-name FName compare, then a short locked push.
+            m_constructs.fetch_add(1, std::memory_order_relaxed);
+            if (!o)
+            {
+                return;
+            }
+            UClass* c = o->GetClassPrivate();
+            if (!c)
+            {
+                return;
+            }
+            const FName& n = c->GetNamePrivate();
+            const int which = n == m_known_fname[0] ? 0 : n == m_known_fname[1] ? 1 : -1;
+            if (which < 0)
+            {
+                return;
+            }
+            const int32_t idx = o->GetInternalIndex();
+            // Bounded try-lock, never a blocking one: this runs on the game thread, and an
+            // SEH-swallowed fault (/EHsc skips destructors) could in theory orphan the lock.
+            // A miss costs nothing lasting -- the safety walk re-finds the widget.
+            std::unique_lock<std::mutex> lock(m_known_mx, std::defer_lock);
+            for (int spin = 0; spin < 200 && !lock.try_lock(); ++spin)
+            {
+                std::this_thread::yield();
+            }
+            if (!lock.owns_lock())
+            {
+                return;
+            }
+            auto& v = m_known[which];
+            if (v.size() >= 64)
+            {
+                std::erase_if(v, [](const LiveCand& k) { return !slot_live(k.obj, k.idx); });
+            }
+            v.push_back({o, idx});
+        }
+        // Live instances of map bodies (which=0) or bases (1). Update thread only: it may
+        // walk. Walk results MERGE into the registry, so an instance constructed while the
+        // walk ran is not lost.
+        auto known_objects(int which, std::vector<UObject*>& out) -> void
+        {
+            out.clear();
+            const auto now = std::chrono::steady_clock::now();
+            const bool hook_live = m_constructs.load(std::memory_order_relaxed) > 0;
+            if (!hook_live || now >= m_next_safety_walk[which])
+            {
+                UObjectGlobals::FindAllOf(which == 0 ? STR("WBP_Map_Body_C") : STR("WBP_Map_Base_C"), out);
+                m_next_safety_walk[which] = now + std::chrono::seconds(60);
+                std::vector<LiveCand> found;   // object reads OUTSIDE the lock
+                found.reserve(out.size());
+                for (auto* o : out)
+                {
+                    if (o)
+                    {
+                        found.push_back({o, o->GetInternalIndex()});
+                    }
+                }
+                std::lock_guard<std::mutex> lock(m_known_mx);
+                auto& v = m_known[which];
+                for (const auto& f : found)
+                {
+                    if (std::none_of(v.begin(), v.end(), [&f](const LiveCand& k) { return k.obj == f.obj; }))
+                    {
+                        v.push_back(f);
+                    }
+                }
+                std::erase_if(v, [](const LiveCand& k) { return !slot_live(k.obj, k.idx); });
+                return;
+            }
+            std::lock_guard<std::mutex> lock(m_known_mx);
+            auto& v = m_known[which];
+            std::erase_if(v, [](const LiveCand& k) { return !slot_live(k.obj, k.idx); });
+            out.reserve(v.size());
+            for (const auto& k : v)
+            {
+                out.push_back(k.obj);
+            }
+        }
+        // find_map found no visible body: a missed construct would leave the map blank
+        // until the next safety walk, so pull that walk in to at most 10 s away.
+        auto hurry_body_walk() -> void
+        {
+            const auto soon = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            if (m_next_safety_walk[0] > soon)
+            {
+                m_next_safety_walk[0] = soon;
+            }
+        }
+        auto publish_find(const MapFind& f) -> void
+        {
+            std::lock_guard<std::mutex> lock(m_find_mx);
+            m_pub_find = f;
+            ++m_pub_seq;
+        }
+        // Prefetch the three POI point lists on the update thread while the map is open, so
+        // a cold poi_objects cache (first open per world, the 5-minute backstop) never walks
+        // on the game thread. Same freshness rule as poi_objects.
+        auto prefetch_poi() -> void
+        {
+            static constexpr const wchar_t* kPoiCls[3] = {L"PalLocationPointFastTravel",
+                                                          L"PalLocationPoint_BossTower",
+                                                          L"PalLocationPoint_StandaloneBoss"};
+            const auto now = std::chrono::steady_clock::now();
+            for (size_t w = 0; w < 3; ++w)
+            {
+                {
+                    std::lock_guard<std::mutex> lock(m_find_mx);
+                    bool fresh = !m_pub_poi[w].empty() && now < m_pub_poi_at[w] + std::chrono::minutes(4);
+                    for (const auto& c : m_pub_poi[w])
+                    {
+                        if (!fresh)
+                        {
+                            break;
+                        }
+                        fresh = slot_live(c.obj, c.idx);
+                    }
+                    if (fresh)
+                    {
+                        continue;
+                    }
+                }
+                std::vector<UObject*> objs;
+                UObjectGlobals::FindAllOf(kPoiCls[w], objs);
+                std::vector<LiveCand> list;
+                list.reserve(objs.size());
+                for (auto* o : objs)
+                {
+                    if (o)
+                    {
+                        list.push_back({o, o->GetInternalIndex()});
+                    }
+                }
+                std::lock_guard<std::mutex> lock(m_find_mx);
+                m_pub_poi[w] = std::move(list);
+                m_pub_poi_at[w] = now;
+            }
+        }
+        // The game-thread map driver is alive: ran within 1.5 s.
+        auto map_frame_alive() const -> bool
+        {
+            const std::chrono::steady_clock::time_point last{
+                std::chrono::steady_clock::duration{m_last_map_frame.load(std::memory_order_relaxed)}};
+            return m_minimap_fast && std::chrono::steady_clock::now() - last < std::chrono::milliseconds(1500);
+        }
         auto find_map_timed(MapFind& f) -> void
         {
             PerfMax<std::atomic<long long>> perf{m_perf_find_map_max_us};
@@ -3003,6 +3205,16 @@ inline bool g_wp_on = false;
                 f.root_idx = f.root->GetInternalIndex();
                 f.body_idx = f.body_canvas->GetInternalIndex();
                 f.mask_idx = f.mask->GetInternalIndex();
+                std::vector<UObject*> bases;
+                known_objects(1, bases);
+                f.bases.reserve(bases.size());
+                for (auto* b : bases)
+                {
+                    if (b)
+                    {
+                        f.bases.push_back({b, b->GetInternalIndex()});
+                    }
+                }
             }
         }
 
@@ -3011,7 +3223,7 @@ inline bool g_wp_on = false;
         auto find_map(UObject*& out_root, UObject*& out_map_body_canvas, UObject*& out_mask_canvas) -> bool
         {
             std::vector<UObject*> bodies;
-            UObjectGlobals::FindAllOf(STR("WBP_Map_Body_C"), bodies);
+            known_objects(0, bodies);
             UObject* best_root = nullptr;
             UObject* best_mask = nullptr;
             UObject* best_body_canvas = nullptr;
@@ -3064,6 +3276,10 @@ inline bool g_wp_on = false;
             out_root = best_root;
             out_map_body_canvas = best_body_canvas;
             out_mask_canvas = best_mask;
+            if (!best_mask)
+            {
+                hurry_body_walk();
+            }
             return best_mask != nullptr;
         }
 
@@ -3370,7 +3586,31 @@ inline bool g_wp_on = false;
                 }
                 return;
             }
-            UObjectGlobals::FindAllOf(cls, out);
+            // Cold: take the update thread's prefetch (prefetch_poi) if every point in it is
+            // alive -- this runs on the game thread, where a 3-class walk is a visible hitch.
+            {
+                std::vector<LiveCand> pre;
+                {
+                    std::unique_lock<std::mutex> lock(m_find_mx, std::try_to_lock);
+                    if (lock.owns_lock() && which < 3 && now < m_pub_poi_at[which] + std::chrono::minutes(5))
+                    {
+                        pre = m_pub_poi[which];
+                    }
+                }
+                if (!pre.empty() && std::all_of(pre.begin(), pre.end(),
+                                                [](const LiveCand& c) { return slot_live(c.obj, c.idx); }))
+                {
+                    cache = std::move(pre);
+                    m_poi_cache_at[which] = now;
+                    out.reserve(cache.size());
+                    for (const auto& c : cache)
+                    {
+                        out.push_back(c.obj);
+                    }
+                    return;
+                }
+            }
+            UObjectGlobals::FindAllOf(cls, out);   // no prefetch yet: walk (rare)
             cache.clear();
             for (auto* o : out)
             {
@@ -5656,6 +5896,13 @@ inline bool g_wp_on = false;
                 cache.clear();   // the next world registers its own points
             }
             {
+                std::lock_guard<std::mutex> lock(m_find_mx);
+                for (auto& pre : m_pub_poi)
+                {
+                    pre.clear();
+                }
+            }
+            {
                 std::lock_guard<std::mutex> lock(m_live_mx);
                 for (bool& walked : m_live_cands_walked)
                 {
@@ -6603,8 +6850,17 @@ inline bool g_wp_on = false;
         // the body root was never a correct parent anyway -- it pans with the map.
         auto screen_canvas() -> UObject*
         {
+            // The update thread listed the bases (MapFind::bases); prove each is still alive
+            // before touching it -- the list is up to one tick old.
             std::vector<UObject*> bases;
-            UObjectGlobals::FindAllOf(STR("WBP_Map_Base_C"), bases);
+            bases.reserve(m_frame_bases.size());
+            for (const auto& b : m_frame_bases)
+            {
+                if (slot_live(b.obj, b.idx))
+                {
+                    bases.push_back(b.obj);
+                }
+            }
             UObject* stored_root = nullptr;   // the base we already built on, if still alive
             bool stored_visible = false;      // ...and whether it is the one on screen now
             UObject* visible = nullptr;
@@ -8797,6 +9053,7 @@ inline bool g_wp_on = false;
                 {
                     const long long tick_us = m_perf_tick_max_us.exchange(0);
                     const long long find_us = m_perf_find_map_max_us.exchange(0);
+                    const long long map_us = m_perf_map_frame_max_us.exchange(0);
                     if (m_perf_next_log.time_since_epoch().count() != 0)
                     {
                         // "x N" = how many times that walk ran in the window; "kinds" = which
@@ -8804,9 +9061,11 @@ inline bool g_wp_on = false;
                         // 8 Pals), so a slow one can be pinned on a layer.
                         Output::send<LogLevel::Default>(
                             STR("[Lodestone] cost, worst single call in 5 min: HUD frame {}us (live scan {}us kinds "
-                                "{}, HUD walk {}us x{}, player lookup {}us x{}); map tick {}us (find_map {}us)\n"),
+                                "{}, HUD walk {}us x{}, player lookup {}us x{}); map frame {}us (game thread); "
+                                "update tick {}us (find_map {}us){}\n"),
                             m_perf_frame_max_us, m_perf_live_max_us, m_perf_live_kinds, m_perf_hud_max_us,
-                            m_perf_hud_n, m_perf_pc_max_us, m_perf_pc_n, tick_us, find_us);
+                            m_perf_hud_n, m_perf_pc_max_us, m_perf_pc_n, map_us, tick_us, find_us,
+                            m_map_fallback ? STR(" [FALLBACK: update thread drives map]") : STR(""));
                     }
                     m_perf_next_log = now + std::chrono::seconds(300);
                     m_perf_frame_max_us = 0;
@@ -10003,6 +10262,21 @@ inline bool g_wp_on = false;
                 // lock is held.
                 MapFind found{};
                 tick_walks_seh(found);
+                publish_find(found);
+                // The game thread owns every UMG write (map_frame). Drive the map from here
+                // ONLY while that driver is silent -- the server EngineTick stall.
+                const bool fallback = !map_frame_alive();
+                if (fallback != m_map_fallback)
+                {
+                    m_map_fallback = fallback;
+                    Output::send<LogLevel::Warning>(
+                        fallback ? STR("[Lodestone] map: game-thread driver silent -- update thread drives the map\n")
+                                 : STR("[Lodestone] map: game-thread driver back\n"));
+                }
+                if (!fallback)
+                {
+                    return;
+                }
                 std::lock_guard<std::mutex> state(m_state_mx);
                 tick_map_seh(found);
             }
@@ -10011,11 +10285,57 @@ inline bool g_wp_on = false;
                 Output::send<LogLevel::Warning>(STR("[Lodestone] tick_map: C++ throw caught (frame skipped)\n"));
             }
             // Report a caught AV from the C++ layer (the __except scope stays object-free).
-            if (m_seh_new)
+            if (m_seh_new.exchange(false))
             {
-                m_seh_new = false;
                 Output::send<LogLevel::Warning>(STR("[Lodestone] tick_map: SEH caught AV #{} (frame skipped)\n"),
-                                                m_seh_hits);
+                                                m_seh_hits.load());
+            }
+        }
+        // Game-thread map driver: runs tick_map on the latest walk the update thread
+        // published (~every 300 ms). Called from the EngineTick hook after minimap_frame.
+        auto map_frame() -> void
+        {
+            const auto now = std::chrono::steady_clock::now();
+            m_last_map_frame.store(now.time_since_epoch().count(), std::memory_order_relaxed);
+            MapFind found{};
+            uint64_t seq = 0;
+            {
+                // try-lock only (see on_constructed): a busy slot = try next frame.
+                std::unique_lock<std::mutex> lock(m_find_mx, std::try_to_lock);
+                if (!lock.owns_lock())
+                {
+                    return;
+                }
+                // A fresh publish, or 400 ms without one (keep polling panel clicks).
+                if (m_pub_seq == 0 || (m_pub_seq == m_map_frame_seq && now < m_next_map_frame))
+                {
+                    return;
+                }
+                found = m_pub_find;
+                seq = m_pub_seq;
+            }
+            // Never block the game: if the update thread holds the state (fallback driver)
+            // try again next frame.
+            std::unique_lock<std::mutex> state(m_state_mx, std::try_to_lock);
+            if (!state.owns_lock())
+            {
+                return;
+            }
+            m_map_frame_seq = seq;   // game-thread only; the publish side never reads it
+            m_next_map_frame = now + std::chrono::milliseconds(400);
+            try
+            {
+                PerfMax<std::atomic<long long>> perf{m_perf_map_frame_max_us};
+                tick_map_seh(found);
+            }
+            catch (...)
+            {
+                Output::send<LogLevel::Warning>(STR("[Lodestone] map frame: C++ throw caught (frame skipped)\n"));
+            }
+            if (m_seh_new.exchange(false))
+            {
+                Output::send<LogLevel::Warning>(STR("[Lodestone] map frame: SEH caught AV #{} (frame skipped)\n"),
+                                                m_seh_hits.load());
             }
         }
         auto tick_walks_seh(MapFind& found) -> void
@@ -10026,6 +10346,10 @@ inline bool g_wp_on = false;
                 // driver) wants to read them.
                 scan_live_candidates();
                 find_map_timed(found);
+                if (found.open)
+                {
+                    prefetch_poi();   // before the publish, so the game thread's first place has it
+                }
             }
             __except (minimap_av_filter(GetExceptionCode()))
             {
@@ -10083,6 +10407,7 @@ inline bool g_wp_on = false;
             {
                 return;   // torn down in between: try again next tick
             }
+            m_frame_bases = found.bases;   // screen_canvas reads it (build_panel, below)
             UObject* const root = found.root;
             UObject* const map_body_canvas = found.body_canvas;
             UObject* const mask = found.mask;
