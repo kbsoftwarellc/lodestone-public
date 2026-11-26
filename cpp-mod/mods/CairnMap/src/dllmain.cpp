@@ -1493,6 +1493,14 @@ inline bool g_wp_on = false;
         // the player -- census: 18 loaded; PalDungeonPointMarker=0 and the subsystem TMap=0.
         static constexpr int kDungeonLayer = 1007;
         static constexpr const wchar_t* kDungeonIcon = L"T_icon_compass_dungeon";
+        // Boss dungeons: the FIXED instances (APalDungeonFixedEntrance, BP_DungeonFixedEntrance_*
+        // -- 18 placed in MainWorld_5, all always loaded). FindAllOf(PalDungeonEntrance) matches
+        // subclasses, so they used to fill the Dungeon layer (every open read "18 of 18") and
+        // crowd out the random caves (BP_DungeonEntrance_*), which only replicate when near.
+        // Same scan, split by class (is_fixed_entrance). Key-boss art: in UI/InGame, checked
+        // against the pak index (a missing name would disable every icon).
+        static constexpr int kBossDungeonLayer = 1012;
+        static constexpr const wchar_t* kBossDungeonIcon = L"T_icon_compass_KeyBoss";
         // Lucky (rare "shiny") wild Pals (Build B): live scan of PalCharacter actors filtered
         // by IsRarePal, nearest-only. No static positions -- they wander + spawn/despawn.
         static constexpr int kLuckyLayer = 1008;
@@ -1520,7 +1528,8 @@ inline bool g_wp_on = false;
             {kEffigyLayer, L"Effigies"},      {kNoteLayer, L"Notes"},   {kEggLayer, L"Eggs"},
             {kFastTravelLayer, L"FastTravel"}, {kTowerLayer, L"Tower"}, {kSealedLayer, L"SealedRealm"},
             {kPalSpeciesLayer, L"Pal"}, {kDungeonLayer, L"Dungeon"}, {kLuckyLayer, L"Lucky"},
-            {kWaypointLayer, L"Waypoint"}, {kSchematicLayer, L"Schematic"}, {kCatchLayer, L"Catch"}};
+            {kWaypointLayer, L"Waypoint"}, {kSchematicLayer, L"Schematic"}, {kCatchLayer, L"Catch"},
+            {kBossDungeonLayer, L"BossDungeon"}};
         // Dynamic panel label for the Pal layer ("Pal: <name>"); a member so its
         // c_str() outlives the panel build. Rebuilt in panel_items from g_track_pal.
         std::wstring m_pal_label = L"Pal";
@@ -1606,6 +1615,7 @@ inline bool g_wp_on = false;
         // pool. Streaming already limits FindAllOf(PalDungeonEntrance) to nearby, this bounds it.
         static constexpr Engine::FLinearColor_ kDungeonColor{0.35f, 0.85f, 0.75f, 1.0f};
         static constexpr size_t kDungeonMaxDots = 20;
+        static constexpr Engine::FLinearColor_ kBossDungeonColor{1.0f, 0.42f, 0.22f, 1.0f};   // boss orange
         // Lucky Pals: gold to match the golden-sparkle VFX; nearest-only ("only need to track
         // nearest", Kenny). kLuckyRangeUU = when the sound/alert fires (300 m); + hysteresis so
         // it fires once per approach, not every tick at the boundary.
@@ -2647,6 +2657,7 @@ inline bool g_wp_on = false;
                 v.push_back({PanelItem::Row, L"Syndicate Towers", kTowerLayer, kTowerIcon, 1.0f, 0.45f, 0.85f});
                 v.push_back({PanelItem::Row, L"Sealed Realms", kSealedLayer, kSealedIcon, 0.70f, 0.55f, 1.0f});
                 v.push_back({PanelItem::Row, L"Dungeons", kDungeonLayer, kDungeonIcon, 0.35f, 0.85f, 0.75f});
+                v.push_back({PanelItem::Row, L"Boss Dungeons", kBossDungeonLayer, kBossDungeonIcon, 1.0f, 0.42f, 0.22f});
                 v.push_back({PanelItem::Row, L"Schematics", kSchematicLayer, kSchematicIcon, 0.35f, 0.80f, 1.0f});
                 v.push_back({PanelItem::Row, L"Lucky Pals", kLuckyLayer, nullptr, 1.0f, 0.84f, 0.20f});
                 m_catch_label = L"Pals: under " + std::to_wstring(g_catch_below) + L" caught";
@@ -3979,6 +3990,7 @@ inline bool g_wp_on = false;
             resolve_one(kTowerIcon);
             resolve_one(kSealedIcon);
             resolve_one(kDungeonIcon);
+            resolve_one(kBossDungeonIcon);
             resolve_one(kSchematicIcon);
             resolve_one(kCatchIcon);
             resolve_one(L"T_icon_map_player");   // minimap heading arrow
@@ -4166,22 +4178,46 @@ inline bool g_wp_on = false;
         // Cap to the nearest kDungeonMaxDots so a dense pocket can't flood the pool. Mirrors
         // place_live_pois' FindAllOf front-end + place_tracked_pal's nth_element cap. The
         // compass + nearest readout pick these up for free via compute_nearest (kDungeonLayer).
+        // True for a fixed boss-instance entrance (APalDungeonFixedEntrance or a subclass),
+        // false for a random cave. A class-chain FName compare: no reflection call, no
+        // allocation, safe from either thread (the FName is built once, thread-safe static).
+        static auto is_fixed_entrance(UObject* o) -> bool
+        {
+            static const FName kFixed(STR("PalDungeonFixedEntrance"), FNAME_Add);
+            UStruct* s = o ? o->GetClassPrivate() : nullptr;
+            for (int depth = 0; s && depth < 16; ++depth, s = s->GetSuperStruct())
+            {
+                if (s->GetNamePrivate() == kFixed)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         auto place_nearest_dungeons(UClass* image_class) -> size_t
         {
             if (!m_calibration)
             {
                 return 0;
             }
-            if (!is_layer_on(kDungeonLayer))
+            const bool caves_on = is_layer_on(kDungeonLayer);
+            const bool boss_on = is_layer_on(kBossDungeonLayer);
+            if (!caves_on && !boss_on)
             {
                 return 0;   // see live_objects: an off layer is not scanned
             }
             std::vector<UObject*> objs;
             live_objects(kLiveDungeon, L"PalDungeonEntrance", objs);
-            std::vector<std::pair<double, double>> pts;
+            std::vector<std::pair<double, double>> pts, boss_pts;
             for (auto* o : objs)
             {
                 if (!o)
+                {
+                    continue;
+                }
+                const bool fixed = is_fixed_entrance(o);
+                if (fixed ? !boss_on : !caves_on)
                 {
                     continue;
                 }
@@ -4190,7 +4226,22 @@ inline bool g_wp_on = false;
                 {
                     continue;
                 }
-                pts.push_back({wx, wy});
+                (fixed ? boss_pts : pts).push_back({wx, wy});
+            }
+            // Boss dungeons: every one, no cap (18 in the world, all loaded).
+            size_t boss_shown = 0;
+            for (const auto& [wx, wy] : boss_pts)
+            {
+                const auto pos = m_calibration->transform.apply(wx, wy);
+                if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
+                {
+                    continue;
+                }
+                if (emit_dot(image_class, pos, {wx, wy}, kBossDungeonColor, kBossDungeonIcon, kPoiDotPx, true,
+                             kBossDungeonLayer) != SIZE_MAX)
+                {
+                    ++boss_shown;
+                }
             }
             const size_t total = pts.size();
             double px = 0, py = 0, pz = 0;
@@ -4220,8 +4271,10 @@ inline bool g_wp_on = false;
                     ++shown;
                 }
             }
-            Output::send<LogLevel::Default>(STR("[Lodestone] dungeons: {} of {} nearby placed\n"), shown, total);
-            return shown;
+            Output::send<LogLevel::Default>(
+                STR("[Lodestone] dungeons: {} of {} nearby caves placed; boss dungeons: {} of {}\n"), shown, total,
+                boss_shown, boss_pts.size());
+            return shown + boss_shown;
         }
 
         // Solved-schematic set, refreshed off the player record. Cheap but not free (a
@@ -4722,7 +4775,8 @@ inline bool g_wp_on = false;
             // The Pal walk feeds two layers (Lucky and Catch). All layers off: publish an
             // empty list without walking.
             const bool wanted =
-                is_layer_on(kKinds[kind].layer) || (kind == kLivePal && is_layer_on(kCatchLayer));
+                is_layer_on(kKinds[kind].layer) || (kind == kLivePal && is_layer_on(kCatchLayer)) ||
+                (kind == kLiveDungeon && is_layer_on(kBossDungeonLayer));
             if (wanted)
             {
                 std::vector<UObject*> objs;
@@ -4822,6 +4876,28 @@ inline bool g_wp_on = false;
                 const int layer = kLayerOf[kind];
                 LiveNearest ln{};
                 int rare = 0, total = 0;
+                if (kind == kLiveDungeon)
+                {
+                    // One walk, two layers: random caves -> Dungeon, fixed boss instances ->
+                    // Boss Dungeons.
+                    std::vector<UObject*> caves, bosses;
+                    for (auto* o : objs)
+                    {
+                        (is_fixed_entrance(o) ? bosses : caves).push_back(o);
+                    }
+                    LiveNearest bn{};
+                    if (is_layer_on(kDungeonLayer))
+                    {
+                        ln.valid = nearest_among(caves, px, py, ln.wx, ln.wy, ln.dist);
+                    }
+                    if (is_layer_on(kBossDungeonLayer))
+                    {
+                        bn.valid = nearest_among(bosses, px, py, bn.wx, bn.wy, bn.dist);
+                    }
+                    m_live_nearest[kDungeonLayer] = ln;
+                    m_live_nearest[kBossDungeonLayer] = bn;
+                    continue;
+                }
                 if (!is_layer_on(layer))
                 {
                     // leave ln invalid: the compass injection erases the layer
@@ -4923,9 +4999,10 @@ inline bool g_wp_on = false;
                         return (it != m_live_nearest.end() && it->second.valid) ? it->second.dist / 100.0 : -1.0;
                     };
                     Output::send<LogLevel::Default>(
-                        STR("[Lodestone] live nearest (no map): egg={:.0f}m dungeon={:.0f}m schematic={:.0f}m "
-                            "lucky={:.0f}m\n"),
-                        dm(kEggLayer), dm(kDungeonLayer), dm(kSchematicLayer), dm(kLuckyLayer));
+                        STR("[Lodestone] live nearest (no map): egg={:.0f}m dungeon={:.0f}m boss-dungeon={:.0f}m "
+                            "schematic={:.0f}m lucky={:.0f}m\n"),
+                        dm(kEggLayer), dm(kDungeonLayer), dm(kBossDungeonLayer), dm(kSchematicLayer),
+                        dm(kLuckyLayer));
                 }
             }
         }
@@ -6312,7 +6389,7 @@ inline bool g_wp_on = false;
             // m_live_begin -- re-emitting into a still-present range trips emit_dot's
             // "layer resumed non-contiguously" guard and disables per-layer ranges pool-wide.
             for (int lid : {kEggLayer, kFastTravelLayer, kTowerLayer, kSealedLayer, kPalSpeciesLayer,
-                            kDungeonLayer, kSchematicLayer, kLuckyLayer})
+                            kDungeonLayer, kBossDungeonLayer, kSchematicLayer, kLuckyLayer})
             {
                 m_layer_ranges.erase(lid);
             }
@@ -7639,7 +7716,8 @@ inline bool g_wp_on = false;
                 // An off live-actor layer is never scanned (live_objects), so it has no count.
                 const bool unscanned = !is_layer_on(it.id) &&
                                        (it.id == kEggLayer || it.id == kDungeonLayer ||
-                                        it.id == kSchematicLayer || it.id == kLuckyLayer);
+                                        it.id == kBossDungeonLayer || it.id == kSchematicLayer ||
+                                        it.id == kLuckyLayer);
                 const std::wstring cs =
                     (found >= 0)  ? std::to_wstring(found) + L"/" + std::to_wstring(layer_total(it.id))
                     : unscanned ? std::wstring(L"-")
@@ -9418,7 +9496,7 @@ inline bool g_wp_on = false;
                 // entry (a map-open snapshot) goes stale on the minimap exactly as it did
                 // on the compass. Skip the stale copy -- drawn LIVE from m_live_nearest
                 // just below, matching the compass's live injection.
-                if (d.layer_id == kEggLayer || d.layer_id == kDungeonLayer ||
+                if (d.layer_id == kEggLayer || d.layer_id == kDungeonLayer || d.layer_id == kBossDungeonLayer ||
                     d.layer_id == kSchematicLayer || d.layer_id == kLuckyLayer)
                 {
                     continue;
@@ -9443,6 +9521,7 @@ inline bool g_wp_on = false;
             // Eggs carry the egg item art, same as on the big map, so they read as eggs.
             place_live(kEggLayer, Data::kEggIcon, Engine::FLinearColor_{1.0f, 0.82f, 0.15f, 1.0f});
             place_live(kDungeonLayer, kDungeonIcon, kDungeonColor);
+            place_live(kBossDungeonLayer, kBossDungeonIcon, kBossDungeonColor);
             place_live(kSchematicLayer, kSchematicIcon, kSchematicColor);
             place_live(kLuckyLayer, nullptr, kLuckyColor);
             place_live(kCatchLayer, kCatchIcon, kCatchColor);
@@ -9688,6 +9767,7 @@ inline bool g_wp_on = false;
                 static const LiveMeta kLiveMeta[] = {
                     {kEggLayer, Data::kEggIcon, {1.0f, 0.82f, 0.15f, 1.0f}},
                     {kDungeonLayer, kDungeonIcon, kDungeonColor},
+                    {kBossDungeonLayer, kBossDungeonIcon, kBossDungeonColor},
                     {kSchematicLayer, kSchematicIcon, kSchematicColor},
                     {kLuckyLayer, nullptr, kLuckyColor},
                     {kCatchLayer, kCatchIcon, kCatchColor},
