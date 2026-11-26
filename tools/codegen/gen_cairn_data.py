@@ -108,6 +108,14 @@ LAYERS = [
     # Default ON: asked for by name, and both are sparse.
     ("AncientBark", "AncientBarkLocations.json", (0x8B, 0x5A, 0x2B, 0xFF), True, "T_itemicon_Material_Wood_Ancient"),
     ("Chromite",   "ChromiteLocations.json",     (0x6E, 0x8F, 0xA8, 0xFF), True, "T_itemicon_Material_Chromium"),
+    # Appended 2026-11-26 (Kenny: "is there a set location for them whether active or not?").
+    # Random cave dungeons only ever open at fixed portal markers: 157 BP_DungeonPortalMarker_*
+    # actors, all in the PERSISTENT level, not in any cell --
+    #   extract_spawners.py OUT 'BP_DungeonPortalMarker_*' --map Pal/Content/Pal/Maps/MainWorld_5/PL_MainWorld5.umap
+    # 13 more Grass1 markers sit in one unnamed data-layer cell (MainGrid_L15_X0_Y0_DL18484F9F)
+    # the persistent level never references; left out until shown to be live.
+    # Same dungeon glyph as the live Dungeons layer, muted, so an OPEN cave (bright) stands out.
+    ("CaveSite",   "CaveSiteLocations.json",     (0x5A, 0x9E, 0x94, 0xD9), True, "T_icon_compass_dungeon"),
 ]
 # Panel/legend display name = the resource's real in-game item name (from the pak's
 # DT_ItemNameText_Common), so the legend is not confusing -- e.g. the "Magma" layer is
@@ -126,7 +134,7 @@ DISPLAY = {
     "Outpost": "Enemy Camp", "FruitTree": "Kinship Peach", "CaveMushroom": "Cavern Mushroom",
     "Boss": "Field Boss", "Paldium": "Paldium Fragment", "RedBerry": "Red Berries",
     "Mushroom": "Mushroom", "SkillFruit": "Skill Fruit", "OreRocks": "Ore Rocks",
-    "AncientBark": "Ancient Bark", "Chromite": "Chromite",
+    "AncientBark": "Ancient Bark", "Chromite": "Chromite", "CaveSite": "Cave Sites",
 }
 EFFIGY_ICON = "T_itemicon_Relic"
 NOTE_ICON = "T_itemicon_Consume_TechnologyBook_G1"

@@ -44,9 +44,25 @@ DEFAULT_PAK = os.path.expanduser(
     "~/.local/share/Steam/steamapps/common/Palworld/Pal/Content/Paks/Pal-Windows.pak")
 
 
-def walk(pak, patterns):
-    """{class: [(x, y, z, cell), ...]} for every placed actor matching patterns."""
-    files = pak.directory_index().get(CELLS)
+def walk(pak, patterns, maps=None):
+    """{class: [(x, y, z, cell), ...]} for every placed actor matching patterns.
+
+    `maps`: walk these .umap paths instead of the World Partition cells -- e.g. the
+    persistent level, which holds non-spatial actors such as the 157 cave-dungeon
+    portal markers (BP_DungeonPortalMarker_*) that no cell contains.
+    """
+    index = pak.directory_index()
+    if maps:
+        files = {}
+        for m in maps:
+            d, f = m.rsplit("/", 1)
+            got = index.get(d + "/", {})
+            if f not in got:
+                sys.exit(f"error: {m} not in pak")
+            files[f] = got[f]
+            files[f[:-len(".umap")] + ".uexp"] = got[f[:-len(".umap")] + ".uexp"]
+    else:
+        files = index.get(CELLS)
     if not files:
         sys.exit(f"error: no cells under {CELLS} -- wrong pak?")
     out = collections.defaultdict(list)
@@ -104,6 +120,9 @@ def main():
     ap.add_argument("classes", nargs="+", help="placed actor class names (_C optional, wildcards ok)")
     ap.add_argument("--raw", type=Path, help="also write per-class points with their cell")
     ap.add_argument("--min-z", type=float, help="drop points below this Z (-15000 = surface only)")
+    ap.add_argument("--map", action="append", dest="maps",
+                    help="walk this .umap (pak path) instead of the cells; repeatable, e.g. "
+                         "Pal/Content/Pal/Maps/MainWorld_5/PL_MainWorld5.umap")
     ap.add_argument("--pak", default=os.environ.get("PAK", DEFAULT_PAK))
     ap.add_argument("--oodle", default=os.environ.get("OODLE"),
                     help="liboo2corelinux64.so.9 (cells are Oodle-compressed)")
@@ -114,7 +133,7 @@ def main():
     patterns = [c[:-2] if c.endswith("_C") else c for c in args.classes]
     t = time.time()
     pak = palpak.Pak(args.pak, oodle=palpak.Oodle(args.oodle))
-    raw, stats = walk(pak, patterns)
+    raw, stats = walk(pak, patterns, args.maps)
     print(f"{stats['cells']} cells walked in {time.time() - t:.1f}s, {stats['errors']} errors")
 
     for p in patterns:

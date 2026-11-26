@@ -2646,7 +2646,7 @@ inline bool g_wp_on = false;
                 }
 
                 v.push_back({PanelItem::Header, L"POINTS OF INTEREST", 0});
-                for (int idx : {12, 14, 13, 17})   // Chest, Outpost, Junk, Boss
+                for (int idx : {12, 14, 13, 17, 25})   // Chest, Outpost, Junk, Boss, CaveSite
                 {
                     v.push_back(layer_row(idx));
                 }
