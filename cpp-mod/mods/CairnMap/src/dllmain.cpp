@@ -1553,6 +1553,8 @@ inline bool g_wp_on = false;
         // User waypoint (F3): a single sticky "go here" target injected onto the compass. No
         // static data and no map dot in v1 -- it lives only on the compass strip.
         static constexpr int kWaypointLayer = 1009;
+        // Map-pin glyph, tinted magenta; was a plain magenta circle on the compass.
+        static constexpr const wchar_t* kWaypointIcon = L"T_icon_compass_00";
         // Schematic puzzle towers: ABP_LevelObject_ItemPickupTower_C -- the ancient-shrine
         // pedestals whose panel puzzle rewards a Blueprint_* item (the "Schematic" the UI
         // names). World-partition streamed like dungeons, so FindAllOf returns the nearby
@@ -1688,6 +1690,11 @@ inline bool g_wp_on = false;
             // it. It cannot be looked up from layer_id: effigies/notes/eggs use ids
             // 1000..1002, which are not kLayers indices.
             Engine::FLinearColor_ color{};
+            // A note's amber "map pin" disc, drawn UNDER its icon at the same spot (see
+            // place_collectables). Not a marker of its own: compute_nearest and the minimap
+            // skip it. It used to win the nearest tie (emitted first, same distance), so the
+            // compass showed a plain amber circle for the nearest note (Kenny 2026-11-26).
+            bool backing = false;
         };
         std::vector<Dot> m_dots;                           // pooled dot widgets
         std::unordered_map<int, bool> m_layer_on;          // toggle state per layer id
@@ -3508,6 +3515,7 @@ inline bool g_wp_on = false;
             entry.color = color;
             entry.base_size = base_size;
             entry.layer_id = layer_id;
+            entry.backing = false;   // pooled slot: place_collectables re-marks its backings
             entry.base_hidden = !visible;
             entry.wx = world.x;
             entry.wy = world.y;
@@ -4045,6 +4053,7 @@ inline bool g_wp_on = false;
             resolve_one(kDungeonIcon);
             resolve_one(kBossDungeonIcon);
             resolve_one(kLuckyIcon);
+            resolve_one(kWaypointIcon);
             resolve_one(kSchematicIcon);
             resolve_one(kCatchIcon);
             resolve_one(L"T_icon_map_player");   // minimap heading arrow
@@ -5929,9 +5938,9 @@ inline bool g_wp_on = false;
             for (size_t i = 0; i < placed; ++i)
             {
                 const Dot& d = m_dots[i];
-                if (d.base_hidden)
+                if (d.base_hidden || d.backing)
                 {
-                    continue;   // already collected: not something you still need
+                    continue;   // collected, or a note's pin disc (its icon dot is the marker)
                 }
                 const double dx = d.wx - px;
                 const double dy = d.wy - py;
@@ -6317,6 +6326,7 @@ inline bool g_wp_on = false;
                                                      backing_border_col);
                         if (bidx != SIZE_MAX)
                         {
+                            m_dots[bidx].backing = true;
                             m_guid_dots.push_back({bidx, key});   // copy: key reused below
                             ++placed;
                         }
@@ -9606,9 +9616,9 @@ inline bool g_wp_on = false;
             for (size_t i = 0; i < pooled; ++i)
             {
                 const Dot& d = m_dots[i];
-                if (d.layer_id < 1000 || d.base_hidden || !is_layer_on(d.layer_id))
+                if (d.layer_id < 1000 || d.base_hidden || d.backing || !is_layer_on(d.layer_id))
                 {
-                    continue;
+                    continue;   // backing: a note's pin disc; the minimap's dark disc replaces it
                 }
                 // Eggs/dungeons/lucky spawn/despawn/stream as you walk, so their POOL
                 // entry (a map-open snapshot) goes stale on the minimap exactly as it did
@@ -9918,7 +9928,7 @@ inline bool g_wp_on = false;
                     const double dx = g_wp_x - px, dy = g_wp_y - py;
                     const double d = std::sqrt(dx * dx + dy * dy);
                     m_nearest[kWaypointLayer] =
-                        Nearest{d, 0.0, g_wp_x, g_wp_y, nullptr, kWaypointColor};
+                        Nearest{d, 0.0, g_wp_x, g_wp_y, kWaypointIcon, kWaypointColor};
                 }
                 else
                 {
