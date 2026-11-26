@@ -734,6 +734,34 @@ inline bool g_wp_on = false;
             return icon && std::wstring_view(icon).starts_with(L"T_icon_");
         }
 
+        // Vanilla compass art that carries its OWN colours and a dark outline, so it reads on
+        // any terrain untinted. Decoded from the pak (DXT5 top mip, 2026-11-26): these are
+        // framed / outlined; dungeon, boss, Search_Treasure, Search_Junk, camp and pal_rare
+        // are flat WHITE silhouettes with no outline and must take the layer colour, or they
+        // draw as plain white blobs (Kenny: "some of the icons are just white").
+        inline auto icon_is_framed(const wchar_t* icon) -> bool
+        {
+            if (!icon)
+            {
+                return false;
+            }
+            static constexpr const wchar_t* kFramed[] = {
+                L"T_icon_compass_tower",       L"T_icon_compass_FTtower",     L"T_icon_compass_FTUnlockMap",
+                L"T_icon_compass_BossGate",    L"T_icon_compass_KeyBoss",     L"T_icon_compass_EnemyCamp",
+                L"T_icon_compass_TreasureMap_01", L"T_icon_Compass_Quest_0",  L"T_icon_compass_camp",
+                L"T_icon_compass_Teleport",    L"T_icon_compass_Bounty",
+            };
+            const std::wstring_view n{icon};
+            for (const auto* f : kFramed)
+            {
+                if (n == f)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         // Colours in cairn_data.hpp are authored as 8-bit sRGB (what you'd type in
         // a paint program). UMG's SetColorAndOpacity treats its FLinearColor as
         // *linear* and re-applies the sRGB gamma curve on display, so a byte handed
@@ -741,6 +769,13 @@ inline bool g_wp_on = false;
         // out (254,135,135). Undo the curve once here so the round trip lands on the
         // authored colour. 255 maps to 1.0, so untinted white item art is unchanged.
         // Alpha is linear; do NOT pass it through this.
+        // Same correction for a colour authored as 0..1 sRGB floats (the live-layer constants).
+        inline auto srgbf(const Engine::FLinearColor_& c) -> Engine::FLinearColor_
+        {
+            auto f = [](float s) { return s <= 0.04045f ? s / 12.92f : std::pow((s + 0.055f) / 1.055f, 2.4f); };
+            return {f(c.R), f(c.G), f(c.B), c.A};
+        }
+
         inline auto srgb8(uint8_t c) -> float
         {
             const float s = c / 255.0f;
@@ -762,9 +797,17 @@ inline bool g_wp_on = false;
             // prefix but lives in UI/InGame, not UI/IngameMenu. Ordered the other way
             // round these resolve to a package that does not exist and the load fails
             // silently -- a dot with no icon, which looks like every other icon bug.
-            if (n.starts_with(L"T_icon_compass_") || n.starts_with(L"T_icon_map_"))
+            // T_icon_Compass_Quest_* is spelled with a capital C in the pak; T_icon_pal_rare
+            // is the one T_icon_pal_* glyph we use and it lives in InGame, not IngameMenu.
+            if (n.starts_with(L"T_icon_compass_") || n.starts_with(L"T_icon_Compass_") ||
+                n.starts_with(L"T_icon_map_") || n == L"T_icon_pal_rare")
             {
                 return L"/Game/Pal/Texture/UI/InGame/";
+            }
+            // A Pal's own face, T_<CharacterID>_icon_normal (the tracked-Pal dots).
+            if (n.starts_with(L"T_") && n.ends_with(L"_icon_normal"))
+            {
+                return L"/Game/Pal/Texture/PalIcon/Normal/";
             }
             if (n.starts_with(L"T_icon_"))
             {
@@ -1504,6 +1547,9 @@ inline bool g_wp_on = false;
         // Lucky (rare "shiny") wild Pals (Build B): live scan of PalCharacter actors filtered
         // by IsRarePal, nearest-only. No static positions -- they wander + spawn/despawn.
         static constexpr int kLuckyLayer = 1008;
+        // Sparkle glyph (vanilla's rare-Pal mark), tinted gold. Was icon-less: a plain gold
+        // circle nobody could place (Kenny 2026-11-26).
+        static constexpr const wchar_t* kLuckyIcon = L"T_icon_pal_rare";
         // User waypoint (F3): a single sticky "go here" target injected onto the compass. No
         // static data and no map dot in v1 -- it lives only on the compass strip.
         static constexpr int kWaypointLayer = 1009;
@@ -1681,6 +1727,7 @@ inline bool g_wp_on = false;
         // rebuilt HUD (respawn, reload) rebuilds the minimap instead of orphaning
         // it. Frame-only for now: the transform and dots come after the go/no-go.
         static constexpr double kMinimapDotPx = 14.0;   // big enough for a recognisable icon
+        static constexpr double kMinimapBackPx = 18.0;  // dark disc behind an icon dot
         static constexpr size_t kMinimapMaxDots = 260;
         UObject* m_minimap_canvas = nullptr;
         int32_t m_minimap_canvas_idx = -1;   // object-array slot captured at build, for slot_live()
@@ -1714,6 +1761,11 @@ inline bool g_wp_on = false;
         std::vector<UObject*> m_minimap_dot_slots;   // their canvas slots (for repositioning)
         std::vector<const wchar_t*> m_minimap_dot_icon;   // icon each pooled dot currently shows
         std::vector<Engine::FLinearColor_> m_minimap_dot_col;   // ...and the tint it was given
+        // A dark disc behind every ICON dot (same index as m_minimap_dots, added to the canvas
+        // just before it so it draws underneath): icons sat straight on the terrain capture
+        // and washed out on bright ground (Kenny: "icons don't show well on the minimap").
+        std::vector<UObject*> m_minimap_backs;
+        std::vector<UObject*> m_minimap_back_slots;
         // m_minimap_dot_icon value for a dot that has never been styled (see tick_minimap).
         static constexpr const wchar_t* kUnstyledIcon = L"<unstyled>";
         static auto same_color(const Engine::FLinearColor_& a, const Engine::FLinearColor_& b) -> bool
@@ -2646,7 +2698,8 @@ inline bool g_wp_on = false;
                 }
 
                 v.push_back({PanelItem::Header, L"POINTS OF INTEREST", 0});
-                for (int idx : {12, 14, 13, 17, 25})   // Chest, Outpost, Junk, Boss, CaveSite
+                for (int idx : {12, 14, 13, 17, 25, 26, 27, 28})   // Chest, Outpost, Junk, Boss, CaveSite,
+                                                                   // TreasureMap, MapTower, Npc
                 {
                     v.push_back(layer_row(idx));
                 }
@@ -2659,7 +2712,7 @@ inline bool g_wp_on = false;
                 v.push_back({PanelItem::Row, L"Dungeons", kDungeonLayer, kDungeonIcon, 0.35f, 0.85f, 0.75f});
                 v.push_back({PanelItem::Row, L"Boss Dungeons", kBossDungeonLayer, kBossDungeonIcon, 1.0f, 0.42f, 0.22f});
                 v.push_back({PanelItem::Row, L"Schematics", kSchematicLayer, kSchematicIcon, 0.35f, 0.80f, 1.0f});
-                v.push_back({PanelItem::Row, L"Lucky Pals", kLuckyLayer, nullptr, 1.0f, 0.84f, 0.20f});
+                v.push_back({PanelItem::Row, L"Lucky Pals", kLuckyLayer, kLuckyIcon, 1.0f, 0.84f, 0.20f});
                 m_catch_label = L"Pals: under " + std::to_wstring(g_catch_below) + L" caught";
                 v.push_back({PanelItem::Row, m_catch_label.c_str(), kCatchLayer, kCatchIcon, 0.45f, 0.85f, 1.0f});
             }
@@ -3991,6 +4044,7 @@ inline bool g_wp_on = false;
             resolve_one(kSealedIcon);
             resolve_one(kDungeonIcon);
             resolve_one(kBossDungeonIcon);
+            resolve_one(kLuckyIcon);
             resolve_one(kSchematicIcon);
             resolve_one(kCatchIcon);
             resolve_one(L"T_icon_map_player");   // minimap heading arrow
@@ -4014,6 +4068,34 @@ inline bool g_wp_on = false;
                 return true;   // give up; dots are a fine fallback
             }
             return false;   // registry may not be populated yet -- try again next frame
+        }
+
+        // The tracked Pal's face, T_<id>_icon_normal. Dot::icon keeps a raw pointer, so the
+        // names live in a node-based set (stable addresses across TrackPal changes). Loaded
+        // OUTSIDE tick_load_icons: a species without a face must not disable every icon.
+        std::set<std::wstring> m_dyn_icon_names;
+        std::unordered_map<std::wstring, int> m_dyn_icon_tries;
+        auto track_pal_icon() -> const wchar_t*
+        {
+            if (g_track_pal.empty())
+            {
+                return nullptr;
+            }
+            const auto& name = *m_dyn_icon_names.insert(L"T_" + g_track_pal + L"_icon_normal").first;
+            if (!m_tex_index.count(name) && IsInGameThread() && m_dyn_icon_tries[name] < 3)
+            {
+                ++m_dyn_icon_tries[name];
+                if (auto* tex = load_texture_asset(name.c_str()))
+                {
+                    m_tex_index[name] = tex;
+                }
+                else if (m_dyn_icon_tries[name] == 3)
+                {
+                    Output::send<LogLevel::Default>(STR("[Lodestone] no face icon {} -- tracked Pal stays a dot\n"),
+                                                    name);
+                }
+            }
+            return m_tex_index.count(name) ? name.c_str() : nullptr;
         }
 
         auto layer_texture(const wchar_t* icon) -> UObject*
@@ -4696,7 +4778,7 @@ inline bool g_wp_on = false;
                 return 0;
             }
             const size_t idx =
-                emit_dot(image_class, pos, {wx, wy}, kLuckyColor, nullptr, kPoiDotPx, true, kLuckyLayer);
+                emit_dot(image_class, pos, {wx, wy}, kLuckyColor, kLuckyIcon, kPoiDotPx, true, kLuckyLayer);
             Output::send<LogLevel::Default>(STR("[Lodestone] lucky: {} rare of {} pals, nearest {:.0f}m\n"),
                                             rare, total, dist / 100.0);
             return idx != SIZE_MAX ? 1 : 0;
@@ -5081,6 +5163,7 @@ inline bool g_wp_on = false;
                 pts.resize(kPalMaxDots);
             }
             size_t shown = 0;
+            const wchar_t* const pal_icon = track_pal_icon();
             for (const auto& [wx, wy] : pts)
             {
                 const auto pos = m_calibration->transform.apply(wx, wy);
@@ -5088,7 +5171,7 @@ inline bool g_wp_on = false;
                 {
                     continue;
                 }
-                if (emit_dot(image_class, pos, {wx, wy}, kPalColor, nullptr, kPalDotPx, true,
+                if (emit_dot(image_class, pos, {wx, wy}, kPalColor, pal_icon, kPalDotPx, true,
                              kPalSpeciesLayer) != SIZE_MAX)
                 {
                     ++shown;
@@ -8166,6 +8249,8 @@ inline bool g_wp_on = false;
             m_minimap_dot_slots.clear();
             m_minimap_dot_icon.clear();
             m_minimap_dot_col.clear();
+            m_minimap_backs.clear();
+            m_minimap_back_slots.clear();
             if (!world_gone && terrain_live())
             {
                 m_terrain_rewire = true;
@@ -9394,6 +9479,26 @@ inline bool g_wp_on = false;
                 const float sy = static_cast<float>(half - soy * scale);   // screen +y is down
                 if (cursor >= m_minimap_dots.size())
                 {
+                    // Backing disc first, so it sits under its dot in the canvas's paint order.
+                    UObject* back = nullptr;
+                    UObject* back_slot = nullptr;
+                    {
+                        FStaticConstructObjectParameters bp{image_class, m_minimap_canvas};
+                        back = UObjectGlobals::StaticConstructObject(bp);
+                        Engine::ParamsAddChildToCanvas ba{back, nullptr};
+                        if (!back || !Engine::call(m_minimap_canvas, L"AddChildToCanvas", ba) || !ba.ReturnValue)
+                        {
+                            return;
+                        }
+                        back_slot = ba.ReturnValue;
+                        Engine::ParamsSetAnchors an{0, 0, 0, 0};
+                        Engine::call(back_slot, L"SetAnchors", an);
+                        Engine::ParamsSetAlignment al{{0.5, 0.5}};
+                        Engine::call(back_slot, L"SetAlignment", al);
+                        Style::make_round(back, kMinimapBackPx / 2.0);
+                        Engine::ParamsSetColorAndOpacity bc{{0.02f, 0.03f, 0.05f, 0.72f}};
+                        Engine::call(back, L"SetColorAndOpacity", bc);
+                    }
                     FStaticConstructObjectParameters params{image_class, m_minimap_canvas};
                     UObject* d = UObjectGlobals::StaticConstructObject(params);
                     if (!d)
@@ -9411,6 +9516,8 @@ inline bool g_wp_on = false;
                     Engine::call(a.ReturnValue, L"SetAlignment", al);
                     m_minimap_dots.push_back(d);
                     m_minimap_dot_slots.push_back(a.ReturnValue);
+                    m_minimap_backs.push_back(back);
+                    m_minimap_back_slots.push_back(back_slot);
                     // Not nullptr: that means "styled as a plain dot". A fresh UImage
                     // paints as a white square until styled, and an icon-less layer
                     // (lucky) asks for nullptr -- which used to match and skip the styling.
@@ -9435,8 +9542,10 @@ inline bool g_wp_on = false;
                         // like PalMiniMap. Flattening it to a single-colour silhouette (the glyph
                         // tint) washed it out (Kenny: "icons disappeared" once the day map got
                         // bright). Item/ore glyphs still tint with the layer colour.
-                        const bool framed = icon && (std::wstring_view(icon).starts_with(L"T_icon_compass_") ||
-                                                     std::wstring_view(icon).starts_with(L"T_icon_map_"));
+                        // Only art that carries its own colours goes untinted (icon_is_framed);
+                        // the flat white compass glyphs (dungeon, boss, chest, junk) used to be
+                        // swept in by a T_icon_compass_ prefix test and drew as white blobs.
+                        const bool framed = Style::icon_is_framed(icon);
                         Engine::ParamsSetColorAndOpacity c{
                             (Style::icon_is_glyph(icon) && !framed) ? col
                                                                     : Engine::FLinearColor_{1.0f, 1.0f, 1.0f, 1.0f}};
@@ -9460,6 +9569,15 @@ inline bool g_wp_on = false;
                 Engine::call(m_minimap_dot_slots[cursor], L"SetOffsets", o);
                 Engine::ParamsSetVisibility v{Engine::Vis_HitTestInvisible};
                 Engine::call(dot, L"SetVisibility", v);
+                {
+                    // Icon dots get the dark disc; a plain colour dot is its own marker.
+                    const bool has_icon = m_minimap_dot_icon[cursor] != nullptr;
+                    Engine::ParamsSetOffsets bo{sx, sy, static_cast<float>(kMinimapBackPx),
+                                                static_cast<float>(kMinimapBackPx)};
+                    Engine::call(m_minimap_back_slots[cursor], L"SetOffsets", bo);
+                    Engine::ParamsSetVisibility bv{has_icon ? Engine::Vis_HitTestInvisible : Engine::Vis_Collapsed};
+                    Engine::call(m_minimap_backs[cursor], L"SetVisibility", bv);
+                }
                 ++cursor;
             };
             int li = 0;
@@ -9501,7 +9619,7 @@ inline bool g_wp_on = false;
                 {
                     continue;
                 }
-                place(static_cast<double>(d.wx), static_cast<double>(d.wy), d.icon, d.color);
+                place(static_cast<double>(d.wx), static_cast<double>(d.wy), d.icon, Style::srgbf(d.color));
             }
             // Live actor layers: the nearest egg/dungeon/lucky from refresh_live_nearest's
             // own scan (independent of the map-open pool), so the minimap tracks them as
@@ -9515,7 +9633,8 @@ inline bool g_wp_on = false;
                 auto it = m_live_nearest.find(layer);
                 if (it != m_live_nearest.end() && it->second.valid)
                 {
-                    place(static_cast<double>(it->second.wx), static_cast<double>(it->second.wy), icon, color);
+                    place(static_cast<double>(it->second.wx), static_cast<double>(it->second.wy), icon,
+                          Style::srgbf(color));
                 }
             };
             // Eggs carry the egg item art, same as on the big map, so they read as eggs.
@@ -9523,7 +9642,7 @@ inline bool g_wp_on = false;
             place_live(kDungeonLayer, kDungeonIcon, kDungeonColor);
             place_live(kBossDungeonLayer, kBossDungeonIcon, kBossDungeonColor);
             place_live(kSchematicLayer, kSchematicIcon, kSchematicColor);
-            place_live(kLuckyLayer, nullptr, kLuckyColor);
+            place_live(kLuckyLayer, kLuckyIcon, kLuckyColor);
             place_live(kCatchLayer, kCatchIcon, kCatchColor);
             // DIAG: is the vanishing a PLACEMENT problem (cursor==0) or a RENDER/visibility
             // one (cursor>0 but nothing on screen)? Log the placed count + the geometry so
@@ -9553,6 +9672,7 @@ inline bool g_wp_on = false;
             {
                 Engine::ParamsSetVisibility v{Engine::Vis_Collapsed};
                 Engine::call(m_minimap_dots[i], L"SetVisibility", v);
+                Engine::call(m_minimap_backs[i], L"SetVisibility", v);
             }
         }
 
@@ -9769,7 +9889,7 @@ inline bool g_wp_on = false;
                     {kDungeonLayer, kDungeonIcon, kDungeonColor},
                     {kBossDungeonLayer, kBossDungeonIcon, kBossDungeonColor},
                     {kSchematicLayer, kSchematicIcon, kSchematicColor},
-                    {kLuckyLayer, nullptr, kLuckyColor},
+                    {kLuckyLayer, kLuckyIcon, kLuckyColor},
                     {kCatchLayer, kCatchIcon, kCatchColor},
                 };
                 for (const auto& lm : kLiveMeta)

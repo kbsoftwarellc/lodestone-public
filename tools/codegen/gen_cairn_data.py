@@ -95,7 +95,8 @@ LAYERS = [
     # mesh, no simple Ore drop) and SmallStone (Stone only). RockIron is NOT included: it is 8
     # nodes and actually drops Quartz, not iron. Dense -> default OFF; a plain grey dot (no
     # icon) so it reads as rock and stays distinct from the orange "Ore" layer.
-    ("OreRocks",   "OreRocksLocations.json",     (0x9A, 0x9A, 0xA0, 0xFF), False, None),
+    # Icon added 2026-11-26: the plain grey dot read as "unknown circle" (Kenny). Stone item art.
+    ("OreRocks",   "OreRocksLocations.json",     (0x9A, 0x9A, 0xA0, 0xFF), False, "T_itemicon_Material_Stone"),
     # Appended 2026-10-28 (Kenny asked for both), from tools/extract-locations/extract_spawners.py
     # with the SPEC surface cut (--min-z -15000). Drops read from each node blueprint's own
     # DropItemParameter, not the base-production table:
@@ -116,6 +117,18 @@ LAYERS = [
     # the persistent level never references; left out until shown to be live.
     # Same dungeon glyph as the live Dungeons layer, muted, so an OPEN cave (bright) stands out.
     ("CaveSite",   "CaveSiteLocations.json",     (0x5A, 0x9E, 0x94, 0xD9), True, "T_icon_compass_dungeon"),
+    # Appended 2026-11-26 (Kenny picked them from the persistent-level inventory). All three are
+    # placed only in PL_MainWorld5.umap; extracted with extract_spawners.py --map, and points
+    # within 50 m of world origin (test placements, e.g. a map tower at z 100000) dropped.
+    #   TreasureMap = BP_LevelObject_TreasureMapPoint (42): every spot a treasure map can send you.
+    #   MapTower    = BP_LevelObject_UnlockMapPoint (21): the small observation towers that reveal
+    #                 a map region (not the 152 fast-travel statues). Vanilla's own icon.
+    #   Npc         = BP_MonoNPCSpawner* (17): one-off NPCs -- village chief, snow / Sakurajima /
+    #                 Sorajima villagers, breeder, ranger, nomad, two "StrongOldMan".
+    # Icons are vanilla's framed compass art (shovel, eagle, quest "!"), verified in the pak.
+    ("TreasureMap", "TreasureMapLocations.json", (0xE8, 0xB0, 0x3C, 0xFF), True, "T_icon_compass_TreasureMap_01"),
+    ("MapTower",   "MapTowerLocations.json",     (0x7F, 0xC8, 0xF0, 0xFF), True, "T_icon_compass_FTUnlockMap"),
+    ("Npc",        "NpcLocations.json",          (0xF2, 0xC1, 0x2E, 0xFF), True, "T_icon_Compass_Quest_0"),
 ]
 # Panel/legend display name = the resource's real in-game item name (from the pak's
 # DT_ItemNameText_Common), so the legend is not confusing -- e.g. the "Magma" layer is
@@ -135,6 +148,7 @@ DISPLAY = {
     "Boss": "Field Boss", "Paldium": "Paldium Fragment", "RedBerry": "Red Berries",
     "Mushroom": "Mushroom", "SkillFruit": "Skill Fruit", "OreRocks": "Ore Rocks",
     "AncientBark": "Ancient Bark", "Chromite": "Chromite", "CaveSite": "Cave Sites",
+    "TreasureMap": "Treasure Map Spots", "MapTower": "Map Towers", "Npc": "NPCs",
 }
 EFFIGY_ICON = "T_itemicon_Relic"
 NOTE_ICON = "T_itemicon_Consume_TechnologyBook_G1"

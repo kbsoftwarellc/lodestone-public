@@ -125,7 +125,7 @@ needed and it'll remember.
 
 - **Hardwood / gathering trees** — the question that started this. Hardwood drops from
   specific tree meshes, not resource nodes, so no existing mod maps it.
-- **POIs** — Fast Travel, Dungeons (random caves), Boss Dungeons (fixed instances), Alphas, Sealed Realms, Towers, Bounties, live-queried
+- **POIs** — Fast Travel, Dungeons (random caves), Boss Dungeons (fixed instances), Cave Sites (where caves can open), Treasure Map Spots, Map Towers, NPCs, Alphas, Sealed Realms, Towers, Bounties, live-queried
   via `UPalLocationManager` (confirmed present in-game), needing no embedded data.
 - **Pal spawns + level ranges** — positions embedded, Pal IDs and levels read live so they
   survive balance patches.
