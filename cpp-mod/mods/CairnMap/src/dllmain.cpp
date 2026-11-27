@@ -5116,7 +5116,18 @@ inline bool g_wp_on = false;
             // name -- a typo'd TrackPal just finds nothing and marks nothing.
             const FName target(g_track_pal.c_str(), FNAME_Find);
             const uint32_t target_idx = *reinterpret_cast<const uint32_t*>(&target);
-            std::unordered_set<uint32_t> spawner_keys;   // wild SpawnerNames that spawn it
+            // A spawner area (SpawnerName) rolls ONE of its rows by Weight (0x1C), and a row
+            // may be day- or night-only (OnlyTime 0x20: 1 day, 2 night). Marking every area
+            // that lists the Pal at all pointed Kenny at 5,327 spots for MimicDog, most where
+            // it is a rare roll -- "couldn't find mimogs at all". So score each area by the
+            // Pal's share of its weight and keep only the likeliest ones (>= half the best).
+            struct AreaStat
+            {
+                double total = 0.0, mine = 0.0;
+                int rows = 0, mine_rows = 0;
+                bool day = false, night = false, anytime = false;
+            };
+            std::unordered_map<uint32_t, AreaStat> areas;
             for (auto& kv : wild->GetRowMap())
             {
                 uint8_t* row = kv.Value;
@@ -5124,13 +5135,48 @@ inline bool g_wp_on = false;
                 {
                     continue;
                 }
+                auto& a = areas[*reinterpret_cast<uint32_t*>(row + 0x10)];   // SpawnerName
+                const float w = *reinterpret_cast<float*>(row + 0x1C);        // Weight
+                const double wd = (w > 0.0f && w < 1e6f) ? static_cast<double>(w) : 0.0;
+                a.total += wd;
+                ++a.rows;
                 for (size_t off : {size_t{0x24}, size_t{0x44}, size_t{0x64}})   // Pal_1/2/3
                 {
                     if (*reinterpret_cast<uint32_t*>(row + off) == target_idx)
                     {
-                        spawner_keys.insert(*reinterpret_cast<uint32_t*>(row + 0x10));   // SpawnerName
+                        a.mine += wd;
+                        ++a.mine_rows;
+                        const uint8_t t = row[0x20];   // OnlyTime
+                        (t == 1 ? a.day : t == 2 ? a.night : a.anytime) = true;
                         break;
                     }
+                }
+            }
+            auto share = [](const AreaStat& a) {
+                return a.total > 0.0 ? a.mine / a.total
+                                     : (a.rows ? static_cast<double>(a.mine_rows) / a.rows : 0.0);
+            };
+            double best_share = 0.0;
+            size_t listed = 0;
+            for (const auto& [k, a] : areas)
+            {
+                if (a.mine_rows)
+                {
+                    ++listed;
+                    best_share = std::max(best_share, share(a));
+                }
+            }
+            const double keep_share = best_share * 0.5;
+            std::unordered_set<uint32_t> spawner_keys;   // the likeliest areas only
+            bool any_day = false, any_night = false, any_time = false;
+            for (const auto& [k, a] : areas)
+            {
+                if (a.mine_rows && share(a) >= keep_share)
+                {
+                    spawner_keys.insert(k);
+                    any_day |= a.day;
+                    any_night |= a.night;
+                    any_time |= a.anytime;
                 }
             }
             if (spawner_keys.empty())
@@ -5143,6 +5189,7 @@ inline bool g_wp_on = false;
             // to the player -- the full set (~400 for a common Pal) ballooned the widget
             // pool and crashed Slate, and Kenny wants the closest ones, not all.
             std::vector<std::pair<double, double>> pts;
+            size_t interior = 0;
             for (auto& kv : placement->GetRowMap())
             {
                 uint8_t* row = kv.Value;
@@ -5152,6 +5199,12 @@ inline bool g_wp_on = false;
                 }
                 const double wx = *reinterpret_cast<double*>(row + 0x28);   // Location.X
                 const double wy = *reinterpret_cast<double*>(row + 0x30);   // Location.Y
+                const double wz = *reinterpret_cast<double*>(row + 0x38);   // Location.Z
+                if (wz < -15000.0)
+                {
+                    ++interior;   // dungeon interior (SPEC surface cut): its x/y is not where it shows
+                    continue;
+                }
                 if (wx != 0.0 || wy != 0.0)
                 {
                     pts.push_back({wx, wy});
@@ -5186,9 +5239,14 @@ inline bool g_wp_on = false;
                     ++shown;
                 }
             }
+            const wchar_t* when = (any_time || (any_day && any_night)) ? STR("any time")
+                                  : any_night                          ? STR("NIGHT only")
+                                                                       : STR("DAY only");
             Output::send<LogLevel::Default>(
-                STR("[Lodestone] tracked Pal '{}': nearest {} of {} spawn points from {} spawner(s)\n"),
-                g_track_pal.c_str(), shown, total, spawner_keys.size());
+                STR("[Lodestone] tracked Pal '{}': nearest {} of {} spawn points in the {} likeliest of {} areas "
+                    "(best {:.0f}% of an area's spawns, kept >= {:.0f}%; {}; {} dungeon-interior points cut)\n"),
+                g_track_pal.c_str(), shown, total, spawner_keys.size(), listed, best_share * 100.0,
+                keep_share * 100.0, when, interior);
             return shown;
         }
 
@@ -5336,6 +5394,14 @@ inline bool g_wp_on = false;
             Output::send<LogLevel::Default>(
                 STR("[Lodestone] pal names: {} of {} localized{}\n"), resolved, m_pal_species.size(),
                 can_call ? STR("") : STR(" (reflected lookup unavailable -- prettified)"));
+            for (const wchar_t* probe : {STR("MimicDog"), STR("SheepBall"), STR("CandleGhost")})
+            {
+                auto it = m_pal_display.find(probe);
+                if (it != m_pal_display.end())
+                {
+                    Output::send<LogLevel::Default>(STR("[Lodestone] pal name sample: {} -> {}\n"), probe, it->second);
+                }
+            }
         }
 
         // The name to show for an internal species id: localized if resolved, else the
@@ -5540,7 +5606,22 @@ inline bool g_wp_on = false;
                     {
                         ch = static_cast<wchar_t>(std::towlower(ch));
                     }
-                    const size_t at = low.find(m_pal_query);
+                    size_t at = low.find(m_pal_query);
+                    if (at != 0 && m_pal_query.size() > 1)
+                    {
+                        // Also match the code id ("mimicdog" finds Mimog), so a Pal is
+                        // findable by either name (Kenny: the in-game and code names differ).
+                        std::wstring id = s;
+                        for (auto& ch : id)
+                        {
+                            ch = static_cast<wchar_t>(std::towlower(ch));
+                        }
+                        const size_t at_id = id.find(m_pal_query);
+                        if (at == std::wstring::npos || (at_id == 0))
+                        {
+                            at = at_id;
+                        }
+                    }
                     if (at == 0 || (at != std::wstring::npos && m_pal_query.size() > 1))
                     {
                         hits.push_back({at == 0, std::move(disp), &s});
