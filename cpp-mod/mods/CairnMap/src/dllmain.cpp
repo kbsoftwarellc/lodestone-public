@@ -5392,14 +5392,27 @@ inline bool g_wp_on = false;
                 std::wstring disp;
                 if (can_call)
                 {
-                    GLT p{};
-                    p.WorldContextObject = ctx;
-                    p.TextCategory = 4;   // PalMonsterName
-                    p.TextId = FName(internal.c_str(), FNAME_Find);
-                    util->ProcessEvent(fn, &p);
-                    disp = p.ReturnValue.ToString();
+                    // DT_PalNameText keys are "PAL_NAME_<id>" (PAL_NAME_MimicDog -> "Mimog",
+                    // read from the pak). The bare id finds no row, and GetLocalizedText then
+                    // echoes the id back -- 11-27 log: "482 of 482 localized" yet
+                    // "MimicDog -> MimicDog". So ask with the prefix first, then the bare id,
+                    // and never count an echo of what we asked as a real name.
+                    for (const std::wstring key : {L"PAL_NAME_" + internal, internal})
+                    {
+                        GLT p{};
+                        p.WorldContextObject = ctx;
+                        p.TextCategory = 4;   // PalMonsterName
+                        p.TextId = FName(key.c_str(), FNAME_Add);
+                        util->ProcessEvent(fn, &p);
+                        std::wstring got = p.ReturnValue.ToString();
+                        if (!got.empty() && got != STR("None") && got != key && got != internal)
+                        {
+                            disp = std::move(got);
+                            break;
+                        }
+                    }
                 }
-                if (disp.empty() || disp == STR("None"))
+                if (disp.empty())
                 {
                     disp = prettify_internal(internal);
                 }
