@@ -4,7 +4,7 @@ Every build handed to anyone gets a version. It shows in the map panel title
 ("Lodestone 0.3.0") and in `UE4SS.log` (`[Lodestone] v0.3.0 loaded`). Bump
 `LODESTONE_VERSION` in `dllmain.cpp`, `mod/Info.json` and this file together.
 
-## 0.3.0 — 2026-11-27
+## 0.3.0 — 2026-11-27 (commit c26b5f5, DLL sha256 d624b0ac…)
 - Track a Pal, live: when a wild one of the tracked species is near, the compass
   points at the real Pal. A marked spawn spot you reach (50 m) with none there is
   hidden for 10 minutes and the next nearest takes over.
