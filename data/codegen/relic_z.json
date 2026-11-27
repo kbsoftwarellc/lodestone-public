@@ -1,0 +1,2444 @@
+{
+ "A9589829471FDB190D97DC89537CE11F": {
+  "z": 15328,
+  "x": -363776.77,
+  "y": 272943.87,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "A39AEA08429D0D78062320A84EE37242": {
+  "z": 2472,
+  "x": -822996.18,
+  "y": -455299.3,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "CD0005DC4B97063B002F13A1C70C3070": {
+  "z": -2096,
+  "x": -927026.17,
+  "y": -403247.65,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "C28B5DEE4EE2942F6E93D6AE8D14FDDF": {
+  "z": -2084,
+  "x": -795815.54,
+  "y": -490104.87,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "86C32CA14B78E33B7885AE9FEC13D917": {
+  "z": -1268,
+  "x": -64421.47,
+  "y": 95773.88,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "75F2D9CE44A49B342673EDA14C56531E": {
+  "z": 15500,
+  "x": 63373.85,
+  "y": 34058.39,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "778AC97F48FC15DE10EFBC83AA93528B": {
+  "z": 10938,
+  "x": -836733.87,
+  "y": -436815.38,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "7C2629AB46A4B48B0B155386A51D0085": {
+  "z": 10552,
+  "x": -37510.0,
+  "y": 442970.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "4DBA14414EE6FBE734A02BABC5C4F32B": {
+  "z": 2069,
+  "x": -451761.82,
+  "y": -71656.49,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "DE0C2D9F4EA4EA8FBBEE0C9E3C07239C": {
+  "z": 2909,
+  "x": -89166.81,
+  "y": 375571.18,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "FF20D9AF402A1212B07BD9855C3ABE1A": {
+  "z": 36308,
+  "x": -762176.39,
+  "y": -339917.85,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "5D3FAB0C4221315FAAA28F92CBA07874": {
+  "z": 1619,
+  "x": -666777.76,
+  "y": -296914.57,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "29F4B89E4A773320FD1DCFB562CF47EF": {
+  "z": -2085,
+  "x": -36020.0,
+  "y": 550610.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "A3901924413BDAC32B37EDA4CDC24DF9": {
+  "z": 1248,
+  "x": -223491.41,
+  "y": -51539.64,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "631A5BCF415A81ABF98598B6EF83EB0A": {
+  "z": 43503,
+  "x": 87402.38,
+  "y": 62371.13,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "8F51CB8F4F95387C33A04E8B2B782958": {
+  "z": 5710,
+  "x": -1194.59,
+  "y": 166765.63,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "79479C394743C7953D28FF887E333D30": {
+  "z": -1898,
+  "x": 172923.04,
+  "y": 260092.39,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "3756EA4E49FC727B61583AAD0A6FBE82": {
+  "z": -1150,
+  "x": -225371.65,
+  "y": -103211.82,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "66D7AD804F44D66D9D877ABEC77DA500": {
+  "z": 12258,
+  "x": -638559.28,
+  "y": -346189.44,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "19A530564F83F895127D029DDD163DC3": {
+  "z": 12865,
+  "x": -729332.14,
+  "y": -357029.21,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "8AB69DBE4E703513F9424D8162B75864": {
+  "z": 3672,
+  "x": -450064.37,
+  "y": -107654.67,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "AE48D0D44E4F73CDF9E26A83E70A1120": {
+  "z": 19396,
+  "x": 79798.17,
+  "y": -28012.62,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "B0BC175A43531898929F879E7A4CA27D": {
+  "z": 10050,
+  "x": -35090.0,
+  "y": 126840.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "94F35AC94A2094A39D129E870028072B": {
+  "z": -1384,
+  "x": 84690.0,
+  "y": 259530.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "D8E69F7C4D62570A8E02A6A1874A29E3": {
+  "z": 34831,
+  "x": -704669.17,
+  "y": -386894.91,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "FC884FFA41F8BDEFD0D705ADA621F09E": {
+  "z": 230,
+  "x": -655858.54,
+  "y": -463511.11,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "E4BFE4784D0F646845604BB190DEFDFE": {
+  "z": 49535,
+  "x": 98100.0,
+  "y": 77360.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "BB1320054376E3E5A2F5318E7DF6C9D5": {
+  "z": 24637,
+  "x": 93630.24,
+  "y": 7813.88,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "9A2253484EF695D98D7487986C2164FB": {
+  "z": 52031,
+  "x": 84166.0,
+  "y": 71646.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "5EF659654F666F8C28C20CA85691D089": {
+  "z": 17535,
+  "x": 13358.7,
+  "y": 36095.48,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "C57C4CB2433B59C108A8DFA0B2677435": {
+  "z": 3465,
+  "x": -349638.59,
+  "y": -7258.2,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "ED393E6945F92DCBBBF80C8856F7A2CF": {
+  "z": 24485,
+  "x": -639045.0,
+  "y": -221154.42,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "24AC69DD45C2989A803C02890CE5E336": {
+  "z": -461,
+  "x": -592896.4,
+  "y": -169670.71,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "F3B4F2724A77FC980D06CBBBF24C86B9": {
+  "z": 12280,
+  "x": 96670.0,
+  "y": 294990.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "6638945F4B26A1D2EA04D9BD011B359E": {
+  "z": 4740,
+  "x": -623477.57,
+  "y": -228131.79,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "3B7064E0488FEE9BC1BAC887FA92FDD5": {
+  "z": 2127,
+  "x": -98829.62,
+  "y": 121683.37,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "236E7DD447C9BD09C08D319E5CF6EDCF": {
+  "z": -2095,
+  "x": -608479.38,
+  "y": -126420.78,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "6C8680F3416FEFDAA9D0DFA5DAC408B1": {
+  "z": 448,
+  "x": -571482.84,
+  "y": -289720.78,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "9E6E13AD452C095A4C8F94851A58D937": {
+  "z": 6207,
+  "x": 32445.77,
+  "y": 114013.64,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "0547DB424A9C200ED2EED1B9DABACCF6": {
+  "z": 190,
+  "x": -393209.91,
+  "y": -206295.75,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "F1F8A8B74C1C0B9A53C96FBFBFB8690D": {
+  "z": -755,
+  "x": 203099.7,
+  "y": 368516.13,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "AD5B95FD4DDD1F208ECF08B2AFCBAF0F": {
+  "z": -2008,
+  "x": -21300.0,
+  "y": 208570.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "7A99C3C9454E4641301C30872C3168A5": {
+  "z": -1823,
+  "x": -558307.6,
+  "y": -617707.08,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "334DA75D43DC9E37A3C84B81A98BB0A8": {
+  "z": -1815,
+  "x": -168650.0,
+  "y": 574690.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "97436FF6416F9419E06E8ABE9C200E45": {
+  "z": 34150,
+  "x": 512130.0,
+  "y": -525350.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "FC2BAE134481292D6662AB8A048366A6": {
+  "z": 33150,
+  "x": 504520.0,
+  "y": -560010.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "263D2E92426C5C8F90D242A32AAE7683": {
+  "z": 17530,
+  "x": 487040.0,
+  "y": -582320.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "6052C86448A270C6EAE93391D6ADA77C": {
+  "z": 16250,
+  "x": 497090.0,
+  "y": -647840.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "167BD4A64E90E2D83B0EB6B9E5A9D66E": {
+  "z": 19980,
+  "x": 472460.0,
+  "y": -651270.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "BC2F61674EB0B738F09BCB9E215A05DA": {
+  "z": 19300,
+  "x": 442000.0,
+  "y": -692300.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "DD1050D940059084A7F9BEA41C2975AC": {
+  "z": 19040,
+  "x": 407710.0,
+  "y": -742460.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "1BABD4DE4A4E73352670AD837CDFB032": {
+  "z": 19870,
+  "x": 476170.0,
+  "y": -724450.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "2E0FBCA14849F0F559D090A7F6A734B9": {
+  "z": 37190,
+  "x": 495450.0,
+  "y": -710690.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "84F2663B4DB056F9611813ABD0A35266": {
+  "z": 20410,
+  "x": 534460.0,
+  "y": -731820.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "007757BA4C6E20E4BB052284FAAC5FCA": {
+  "z": 31540,
+  "x": 513620.0,
+  "y": -692960.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "AD08F00A4BB0F78AC8B5F1AC32BDA248": {
+  "z": 21618,
+  "x": 596763.32,
+  "y": -729617.12,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "259191A04F8F152EFDD23595F52F7C89": {
+  "z": 20518,
+  "x": 566753.96,
+  "y": -571127.36,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "F11F522A4EE469085AF5A2ACFCFA229C": {
+  "z": 23000,
+  "x": 583720.0,
+  "y": -599440.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "C3583F4E4C391CB080DD8CB14CF56B1F": {
+  "z": 23840,
+  "x": 610150.0,
+  "y": -626490.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "D48FB2064A3F7B182645868B33FE103D": {
+  "z": 53794,
+  "x": -764070.0,
+  "y": -116230.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "1549A6CC45AD5ADE996FB39F74B6810F": {
+  "z": 48730,
+  "x": -805820.0,
+  "y": -102910.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "A6623D2C4055A63AFFCE39B7C90207CC": {
+  "z": 44577,
+  "x": -832250.0,
+  "y": -80950.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "B4DD779543C216E122613684C512F1EE": {
+  "z": 39320,
+  "x": -806370.0,
+  "y": -70850.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "496E36EF449ABEE121F3FFB57E1B2204": {
+  "z": 54380,
+  "x": -751550.0,
+  "y": -87070.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "9187FE9C481291FC66C5A19FD0B2D88E": {
+  "z": 27027,
+  "x": -775140.0,
+  "y": -65190.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "AF1E84884297BF6B3A04DDA834081DED": {
+  "z": 31000,
+  "x": -771490.0,
+  "y": -28050.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "E1BA35114E5CA60F7B653B8424CF041C": {
+  "z": 42035,
+  "x": -763477.78,
+  "y": 35179.83,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "B73A17B94D501B7627F7DFBDC438830C": {
+  "z": 41020,
+  "x": -841200.0,
+  "y": -34110.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "4B599D174EC243045D391985DD202F31": {
+  "z": 36767,
+  "x": -820520.0,
+  "y": -13650.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "A0565AD5451E8EA26CCC04B6C43CE0B3": {
+  "z": 50200,
+  "x": -829440.0,
+  "y": 52170.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "B8372AD54629CEEA1F395FBD7147F289": {
+  "z": 41714,
+  "x": -777090.0,
+  "y": 57250.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "5FBF958B47BBC707484FBD8C054ADE2E": {
+  "z": 42760,
+  "x": -743640.0,
+  "y": -15540.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "2D875799472A12AB13D53F9DB5F7870F": {
+  "z": 39950,
+  "x": -793330.0,
+  "y": 4170.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "CC66A8AA4246ECCCD0CF148FE329E94E": {
+  "z": 52551,
+  "x": -800046.69,
+  "y": 28960.42,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "EFCF4A3E4E552497FA666BBB82E82100": {
+  "z": -1704,
+  "x": -131854.39,
+  "y": -123072.77,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "AEF1BB4C4BB9E48AA2A9FEA81710642D": {
+  "z": 2492,
+  "x": 7327.3,
+  "y": -148580.76,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "CAB5ABEC4E8762AB68CE3C936C353E03": {
+  "z": 3890,
+  "x": -2613.35,
+  "y": -128534.22,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "3C9CCBEB48860DE5AEF3AFBD8C1395CB": {
+  "z": -2038,
+  "x": -31001.73,
+  "y": -28149.62,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "D1C4E3694D9FBDC8EC006D8D34F761D3": {
+  "z": 850,
+  "x": -39432.48,
+  "y": -146954.4,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "A52ABF464C3063FE669825BD3E8C6867": {
+  "z": -1918,
+  "x": -54258.65,
+  "y": -103561.64,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "F664E5D3430197466B429DB8087A40BA": {
+  "z": 1035,
+  "x": -46171.17,
+  "y": -145089.4,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "8E26D917486BF1D961EB17B9E76FE985": {
+  "z": 2577,
+  "x": -36635.74,
+  "y": -154496.88,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "4985D9564F9D5C17954A1B8A44E08269": {
+  "z": 3723,
+  "x": -26300.37,
+  "y": -88939.81,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "5FA638D64D45419369DE1C97E3D2ABE4": {
+  "z": 6005,
+  "x": -15718.59,
+  "y": -123831.95,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "07919A9F41E7F3F85EA79BBF511C295B": {
+  "z": -988,
+  "x": 24000.05,
+  "y": -90318.12,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "1BAA36434BBEB31E642A37924374F50C": {
+  "z": -868,
+  "x": -29613.05,
+  "y": -62733.17,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "63DFCAE9461F068493612B861BEDE094": {
+  "z": 1204,
+  "x": -2174.12,
+  "y": -99294.17,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "33829598432660A7393869B3E73A9C65": {
+  "z": 70,
+  "x": -57183.66,
+  "y": -174532.37,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "D8F3653E47C06372CDAF7395DD2BB9ED": {
+  "z": -1727,
+  "x": -31603.01,
+  "y": -174971.92,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "6DF591234CACF474A68749BF080AC5BA": {
+  "z": -2111,
+  "x": -379832.33,
+  "y": 269566.95,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "826B740443BA5FBC6243158CD8EF0E37": {
+  "z": -1435,
+  "x": -279662.22,
+  "y": 165160.98,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "F8C928554A80DEBF93C25FAC6E5AD604": {
+  "z": -1865,
+  "x": -284318.73,
+  "y": 235440.81,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "0D0BF38A4E8EF27A57F81CB5154C4633": {
+  "z": 808,
+  "x": -339168.33,
+  "y": 184004.1,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "04FE47374849876D3339BAA610391880": {
+  "z": 10543,
+  "x": -122963.32,
+  "y": 241358.66,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "3847D9C84D56600AFA1185BF2017C30C": {
+  "z": 6407,
+  "x": -123372.07,
+  "y": 254804.31,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "5BFE9FAC4EC6570C2C6102922CDD691C": {
+  "z": -1720,
+  "x": -167820.19,
+  "y": 244594.12,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "CE18F94A4EB82EE49C8CC89776D5D42A": {
+  "z": 4197,
+  "x": -125688.01,
+  "y": 265536.04,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "7B3AA6BD4A60381E9E683F9F9FD21CF9": {
+  "z": -1720,
+  "x": -212417.38,
+  "y": 115026.09,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "C984C2AF4B08141209F292A94070C2F0": {
+  "z": 60898,
+  "x": -368061.75,
+  "y": -134742.97,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "AF9415FF405293DA3EB134AEE3ADEE0A": {
+  "z": 4613,
+  "x": -253480.95,
+  "y": 127130.92,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "B077AFD44059109C629881BE83C2F39B": {
+  "z": -674,
+  "x": -262533.37,
+  "y": 137185.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "A968F46848B45292962B4198B36CEF78": {
+  "z": -835,
+  "x": -251718.07,
+  "y": 103839.81,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "B4283FC847577F08AF9815BA9EDCF8D5": {
+  "z": 6546,
+  "x": -219204.39,
+  "y": 131607.97,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "C171A0FB4B7A7DBB248B36B0FBA693B5": {
+  "z": 3415,
+  "x": -174405.4,
+  "y": 171382.87,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "3A860F064749C5EE0190E18E90189AC8": {
+  "z": 6000,
+  "x": -176707.25,
+  "y": 165453.43,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "3F32194747AE9B883B1A9985BE584392": {
+  "z": 4153,
+  "x": -244672.29,
+  "y": 114650.34,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "C1AFE622464C5BF0D698D38F9D69FE3F": {
+  "z": -1107,
+  "x": -346038.64,
+  "y": 280366.37,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "144D469D4F900991969D7291AF6E8378": {
+  "z": -147,
+  "x": -335199.73,
+  "y": 155333.54,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "61A7FF7343DF8368E1E6098925FF4960": {
+  "z": -1866,
+  "x": -323221.71,
+  "y": 92608.07,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "0F1F4A08413591CD03E008A861A09525": {
+  "z": -1113,
+  "x": -267271.55,
+  "y": 5157.44,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "41F03E9D4CF93547CA5806A21CCB3B6D": {
+  "z": -1998,
+  "x": -301715.5,
+  "y": 89024.08,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "1E15689D486E45F63DD3888A01096A6B": {
+  "z": 418,
+  "x": -270319.35,
+  "y": 66094.72,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "A0E2AB764338CE9B9A549D8E09467A7A": {
+  "z": 4050,
+  "x": -312657.39,
+  "y": 63055.14,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "013FF2FC4DDCCC22C290A09264F499BC": {
+  "z": 6860,
+  "x": -311347.91,
+  "y": 30955.1,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "F5F7532A41E4FA4A5AEA8DA23FD8C927": {
+  "z": -2089,
+  "x": -397320.13,
+  "y": 235532.59,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "6E97A40944415B2E8451858C50613591": {
+  "z": 15626,
+  "x": -230035.34,
+  "y": 282108.99,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "6A4E8926421B3ACB05423D80A4B45D1E": {
+  "z": 17498,
+  "x": -168085.8,
+  "y": 251818.26,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "9C354F5C4182BA6D3EB689B7693A0A0D": {
+  "z": 7184,
+  "x": -134415.73,
+  "y": 298847.34,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "82C7859D438F9EC3781D8A9D09752138": {
+  "z": -1933,
+  "x": -141739.11,
+  "y": 253601.6,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "E6FA06E2406EA5A19DDC13B6CDC75583": {
+  "z": 2905,
+  "x": -43289.7,
+  "y": 222904.34,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "C8C21B0146CF197B384A0DA265E8D688": {
+  "z": 14362,
+  "x": -117922.18,
+  "y": 234327.5,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "28CB901F4D4603075D1939A8CAAE14A7": {
+  "z": 1214,
+  "x": -345872.16,
+  "y": 143002.52,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "EE5650754259BE7072E7789BF533C53D": {
+  "z": -1346,
+  "x": -229410.61,
+  "y": 74031.38,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "0D135F004915D8CCB54F04BE5D5F8124": {
+  "z": -1452,
+  "x": -251193.54,
+  "y": 51458.05,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "4A67B45943D38C899E9DBFA6EE436E22": {
+  "z": 191,
+  "x": -170706.96,
+  "y": 50483.02,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "1F4B6F624B807B9DBBFA45AA4C06CD4E": {
+  "z": 31365,
+  "x": -398954.66,
+  "y": -88981.43,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "6D668C844129793E30B5F395EEDEBF96": {
+  "z": 6497,
+  "x": -266489.38,
+  "y": 53997.2,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "81E32E2443E153C6566D7997DB1641C8": {
+  "z": 5299,
+  "x": -211442.87,
+  "y": -11077.08,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "AEC6234A4075A195914E5080A42E97D4": {
+  "z": 18995,
+  "x": -330213.24,
+  "y": -78304.17,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "4F9239674E242374696B838601E94C19": {
+  "z": -1908,
+  "x": -221216.3,
+  "y": -185877.43,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "7196345E496A2264FD10DFBBFFE8CA5B": {
+  "z": 3803,
+  "x": -257769.04,
+  "y": -204290.29,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "42DC77FB45BB23C83DAAE6B1F3F517E7": {
+  "z": -2068,
+  "x": -472013.24,
+  "y": -81182.28,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "D2506521436592CEDFEBB59E32086F86": {
+  "z": -1959,
+  "x": -464655.67,
+  "y": -55120.86,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "1D22696E4A22F0971CD872B4E1F17C1B": {
+  "z": -1947,
+  "x": -441338.44,
+  "y": -35181.28,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "6B126A9B42B3BD19E90C58A594A0C657": {
+  "z": 8420,
+  "x": -247190.0,
+  "y": -123170.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "EC86B1A74A62A2EC3D22BAA46500FD88": {
+  "z": 25258,
+  "x": 28540.93,
+  "y": 78688.37,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "A48EDF9248901537AF02AEA417B6C7E2": {
+  "z": 27131,
+  "x": 103584.43,
+  "y": -39480.15,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "DD7E16D246DA13F780A9C8946232702B": {
+  "z": 43861,
+  "x": 149874.27,
+  "y": 79632.49,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "D5A743E343C9D04A80DCE68F2B6F6243": {
+  "z": -1230,
+  "x": 201322.67,
+  "y": 300351.3,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "05C3B4084382710BC11949A2EB6EDD31": {
+  "z": 2380,
+  "x": 161910.0,
+  "y": 380520.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "416E04734D82DB11908448BFF42D61AC": {
+  "z": -2010,
+  "x": 75319.82,
+  "y": 464887.21,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "81118C5049718D266612669DF7304116": {
+  "z": 5038,
+  "x": -53225.36,
+  "y": 390773.54,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "515F64F047AE5F0A1ACDA1A20CB050FC": {
+  "z": -1240,
+  "x": 5974.93,
+  "y": 362868.44,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "3BEAD93C444A52F725E72FA673F8CE42": {
+  "z": 7777,
+  "x": 20805.26,
+  "y": 296330.51,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "4D1D2D0643AB1058F118C18B06A804F4": {
+  "z": -2095,
+  "x": -117949.9,
+  "y": 375409.84,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "6C95343C41621B8AA11E8BA3308667D8": {
+  "z": -1882,
+  "x": -272316.82,
+  "y": 326450.25,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "A360858E448AF927AF914D8E9D74E416": {
+  "z": -1858,
+  "x": -337495.0,
+  "y": 229740.0,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "B8C66EBC4C132EA10AE6B3A215458B80": {
+  "z": -1210,
+  "x": -288426.23,
+  "y": 141552.41,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "6CA64B00492057D6B5D82D96C534472F": {
+  "z": -659,
+  "x": -294814.91,
+  "y": 212861.92,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "DA1938814973E31858C870A27AE08BD0": {
+  "z": -1922,
+  "x": -316086.08,
+  "y": 169211.54,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "EC20140543804F88E0943F9A5C1765EB": {
+  "z": 2364,
+  "x": -361760.56,
+  "y": 181721.6,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "E4286D164A8925DFC09D0FBFDA2B3698": {
+  "z": 1840,
+  "x": -313237.36,
+  "y": 215705.82,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "8BCDE3654504C5823162BE83EB674216": {
+  "z": 3272,
+  "x": -311674.96,
+  "y": 188520.71,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "7083643D4CCFE3FF924B7E8464126CC0": {
+  "z": -597,
+  "x": -308236.6,
+  "y": 151805.16,
+  "class": "BP_LevelObject_Relic_C"
+ },
+ "F9441EDD491AB9286C65A695BE0281CC": {
+  "z": -845,
+  "x": -118280.0,
+  "y": 127920.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "E8CBD63B487144868C3CC29E4C003620": {
+  "z": -45,
+  "x": -104410.0,
+  "y": 148540.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "3FBC3E624F32A6DA78672A85DAD6677F": {
+  "z": 990,
+  "x": -110010.0,
+  "y": 134360.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "FDE408BB4BCC31CA6742738292074069": {
+  "z": 350,
+  "x": -93370.0,
+  "y": 116180.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "F33784CE48D17D4D659AEDA0F068BFC5": {
+  "z": 835,
+  "x": -76050.0,
+  "y": 101920.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "A1533F8C44FC716D3BF84680DBBD8189": {
+  "z": 7815,
+  "x": -67410.0,
+  "y": 112370.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "F253C6A541748C266D9FB5AADD2B65F5": {
+  "z": 7815,
+  "x": -72050.0,
+  "y": 126140.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "F24EED1E4FA885DD80FDD382316CB0F9": {
+  "z": 7447,
+  "x": -78240.0,
+  "y": 163260.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "12EC7D1F499BDD807EAFDD93009FEDD0": {
+  "z": 17250,
+  "x": -29460.0,
+  "y": 169950.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "6F26D2E4425759859DBCBD870AAF0083": {
+  "z": 16700,
+  "x": -39520.0,
+  "y": 116950.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "126AF85646BB318D346031B03D867560": {
+  "z": 6825,
+  "x": 9380.0,
+  "y": 123290.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "8F9AF6BF4D3F2760C495638F5C343452": {
+  "z": 3690,
+  "x": 25150.0,
+  "y": 111360.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "18C85CF341284CB6097E6A849801BCEC": {
+  "z": 7533,
+  "x": 23170.0,
+  "y": 93760.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "030A86174A276F5993284F85BA4B6409": {
+  "z": 7720,
+  "x": -18370.0,
+  "y": 35380.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "A4A3C7B34A4486AB4E97F5BF853766B9": {
+  "z": 6580,
+  "x": 12640.0,
+  "y": -11770.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "53BC659C4BF6436B628692BAB7152083": {
+  "z": 28770,
+  "x": 97050.0,
+  "y": -35980.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "7F589A664D52E372164F8CA86573939E": {
+  "z": 22580,
+  "x": 114620.0,
+  "y": -21710.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "1FF09CAA4AB426B88A5691849B4541F7": {
+  "z": 23362,
+  "x": 154130.0,
+  "y": 9300.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "B756349E4BD388F457A72A89A9F754B1": {
+  "z": 32524,
+  "x": 125450.0,
+  "y": 43700.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "6A8633B546D6CCFF2AA7F6984087A1EE": {
+  "z": 23416,
+  "x": 156890.0,
+  "y": 46140.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "9C445E4F44B038F7574D45AB0D36BF58": {
+  "z": 29030,
+  "x": 131050.0,
+  "y": 63690.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "002C8A3349443E442D477BBCCCDC0B16": {
+  "z": 48525,
+  "x": 138070.0,
+  "y": 98190.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "7AD0DC6643089BAAB0F0FC81608BB834": {
+  "z": 56570,
+  "x": 86670.0,
+  "y": 77140.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "88F75FA241F8874B0C5045A2E995F013": {
+  "z": 20955,
+  "x": 78140.0,
+  "y": 222490.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "199521824B81B5669F558DAB155E229F": {
+  "z": 7782,
+  "x": 44170.0,
+  "y": 199960.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "191D80C346B731293D17898CE7B2693C": {
+  "z": 11163,
+  "x": 3650.0,
+  "y": 179700.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "BBFBAC454088B8EFE93DFDBDCD9F54B9": {
+  "z": 2420,
+  "x": 21310.0,
+  "y": 104160.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "E5C36AA548AAA06EB5DD0E93B8B26C96": {
+  "z": 17040,
+  "x": -9580.0,
+  "y": 66220.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "47717EE44C700E8C7F47418DEBD8E221": {
+  "z": 17260,
+  "x": 52970.0,
+  "y": 44790.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "4EB1487E4901F4CBD0B78DB2969D1C1D": {
+  "z": 40942,
+  "x": 89730.0,
+  "y": 68030.0,
+  "class": "BP_LevelObject_Relic_FlameBambi_C"
+ },
+ "C988032F41A70D7254DBFE8C1A54B79F": {
+  "z": 13310,
+  "x": -761030.0,
+  "y": -357740.0,
+  "class": "BP_LevelObject_Relic_GuardianDog_C"
+ },
+ "238ABE074AE025AE80E3C2AF7B6DDC4C": {
+  "z": 24400,
+  "x": 615960.0,
+  "y": -734870.0,
+  "class": "BP_LevelObject_Relic_GuardianDog_C"
+ },
+ "F264EEF64876384BB7E9E1956600A40E": {
+  "z": 30460,
+  "x": 501830.0,
+  "y": -718800.0,
+  "class": "BP_LevelObject_Relic_GuardianDog_C"
+ },
+ "277F80A4470F57BC9AACBA91DD894EEC": {
+  "z": 49937,
+  "x": -793670.57,
+  "y": 28823.3,
+  "class": "BP_LevelObject_Relic_GuardianDog_C"
+ },
+ "C424CC2C4553EF32C75220BFF07A17E0": {
+  "z": 1260,
+  "x": 177760.0,
+  "y": 280970.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "39D807FA4FC0C027616EA693FB4AE4B4": {
+  "z": -870,
+  "x": 153970.0,
+  "y": 285020.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "AE3184594C1EFB5B732C059E1C15A7EA": {
+  "z": 785,
+  "x": -68040.0,
+  "y": -256420.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "92FD41DD46D97AD3752D289C7157C43C": {
+  "z": 11820,
+  "x": 105640.0,
+  "y": 290440.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "783435C54E08EECC6AD2ECB02FC3CEB0": {
+  "z": 3320,
+  "x": 82390.0,
+  "y": 283820.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "76EF4D324A3F479CD2FFDE860C015C53": {
+  "z": 1160,
+  "x": 36610.0,
+  "y": 271050.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "B689B22B4B6C3D78E267959157625A11": {
+  "z": -565,
+  "x": -397470.0,
+  "y": -433860.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "8FAD3FBD49B687BFF4E10798C03DC1A7": {
+  "z": -250,
+  "x": -16270.0,
+  "y": 248250.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "49E856994E39C5B552F32AAA2F549E1D": {
+  "z": 4560,
+  "x": -25370.0,
+  "y": 286320.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "90F20D7743A97B7C6506AC96E607B784": {
+  "z": -1947,
+  "x": -59500.0,
+  "y": 349900.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "DA4F5D90418D6EF0636B7095D69E0224": {
+  "z": -315,
+  "x": -94670.0,
+  "y": 365390.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "8639D59447BC04FED463BDAF636A16A0": {
+  "z": -735,
+  "x": -94030.0,
+  "y": 414520.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "7D2A798E4789F3E40138CC959560521B": {
+  "z": -2100,
+  "x": -109050.0,
+  "y": 496610.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "485681334C29882164C712B7D37693AF": {
+  "z": 250,
+  "x": -12490.0,
+  "y": 460970.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "32F6C2BC4D45F586B95B1096259D5A22": {
+  "z": -1630,
+  "x": 64620.0,
+  "y": 438550.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "1FE0AA944D1D727FB6632BAF31F1E5C1": {
+  "z": -2087,
+  "x": 119140.0,
+  "y": 408730.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "9F6730EA455E05EA64DEDD98ED7455D6": {
+  "z": -2103,
+  "x": 180560.0,
+  "y": 385170.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "D3C4474B43682BCF2257AA842E431A7A": {
+  "z": -2115,
+  "x": 216740.0,
+  "y": 302670.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "4033D8964DF51E820083DA8349DD0821": {
+  "z": 5830,
+  "x": 131880.0,
+  "y": 317520.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "2A8C4D5F4321B255640E46A446964495": {
+  "z": 1318,
+  "x": 3610.0,
+  "y": 388720.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "68BCAA004522AAF3D8CC3BA7D281CB47": {
+  "z": 14423,
+  "x": -9390.0,
+  "y": 291840.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "FFC9C90642A597D1745C53B919632C89": {
+  "z": 4834,
+  "x": 87490.0,
+  "y": 354630.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "DB7F2A254F9B5B8A8D60169798EB142C": {
+  "z": 12087,
+  "x": 26890.0,
+  "y": 400750.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "1ADC7A1E4B1A95106DEC11B0A7EFF5B0": {
+  "z": 2190,
+  "x": -60960.0,
+  "y": 371580.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "B95E8C944B40AFED6461DF8103BD0C68": {
+  "z": 12900,
+  "x": -44770.0,
+  "y": 438420.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "22EDC7084124092A25C12682DF70B1C8": {
+  "z": 7890,
+  "x": 111360.0,
+  "y": 360140.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "1BA43F074DF2D70C608201B4492EE8B0": {
+  "z": 1940,
+  "x": 136200.0,
+  "y": 338080.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "F0E02EC346D296B6ECC978B039EBFF0D": {
+  "z": 11694,
+  "x": -61820.0,
+  "y": 445360.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "F5A3D1924C8298C032D3DA8DEEAD48C7": {
+  "z": 16770,
+  "x": -54300.0,
+  "y": 413060.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "41A7781C480638C0D940158A24381E14": {
+  "z": 10515,
+  "x": -465970.0,
+  "y": 366330.0,
+  "class": "BP_LevelObject_Relic_IceCrocodile_C"
+ },
+ "4B80EA6A48055D7D99F889BC1EA77B3C": {
+  "z": 5980,
+  "x": -20450.0,
+  "y": -132160.0,
+  "class": "BP_LevelObject_Relic_LazyDragon_C"
+ },
+ "0F672746491B829BF0B44FBF212C0066": {
+  "z": 2,
+  "x": -2.0,
+  "y": 2.0,
+  "class": "BP_LevelObject_Relic_LazyDragon_C"
+ },
+ "550EDF6940B6ED14E7766ABEAF65F0C9": {
+  "z": 2180,
+  "x": 40790.0,
+  "y": 388870.0,
+  "class": "BP_LevelObject_Relic_LazyDragon_C"
+ },
+ "677F4E8847E539D6372DF1977044E166": {
+  "z": 24150,
+  "x": -409850.0,
+  "y": -97150.0,
+  "class": "BP_LevelObject_Relic_LazyDragon_C"
+ },
+ "D4CFD08B4BF70C8F9A0C968B63BB0EEB": {
+  "z": -1691,
+  "x": -65670.0,
+  "y": 4620.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "D761573D47EF8715185A4EAA7C5516E7": {
+  "z": -1770,
+  "x": -63420.0,
+  "y": -6190.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "A001F0EB4ECCB02C21E7C8AE207671B5": {
+  "z": -1170,
+  "x": -55100.0,
+  "y": -11450.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "0ACD187A471A98E6176CB1BFA87A6697": {
+  "z": -1710,
+  "x": -65270.0,
+  "y": -17190.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "77D091714EF84E5574FF6D9822133B36": {
+  "z": -1747,
+  "x": -41340.0,
+  "y": -19460.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "F548605E47658298D821EFB342E672EC": {
+  "z": -1577,
+  "x": -38180.0,
+  "y": -27950.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "D274983D40AA45F0D7BF7A85E4933BBF": {
+  "z": -1783,
+  "x": -55500.0,
+  "y": -47200.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "6E9DA1D94E1F502D90E8419132CE00C9": {
+  "z": -960,
+  "x": -76850.0,
+  "y": -68220.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "343EF98D40FF15E40DD4CCACC96343A9": {
+  "z": -2070,
+  "x": -77440.0,
+  "y": -96090.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "3F5A1D384A30BA5AC6CF52A4ECCAF1D4": {
+  "z": -2050,
+  "x": -63840.0,
+  "y": -82160.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "9EA2C4664606625B152E5AB5361F1BE6": {
+  "z": 147,
+  "x": -51440.0,
+  "y": -87750.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "04707DE846F38C0E9E7BCCAFA9AC9261": {
+  "z": -1120,
+  "x": -49480.0,
+  "y": -109990.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "F1A8B51C439AC856E60D16B7D5616339": {
+  "z": -1937,
+  "x": -75960.0,
+  "y": -132870.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "3328B8C0499212D833C316B3210B3A87": {
+  "z": -1900,
+  "x": -120630.0,
+  "y": -135290.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "E2993A454694F6F1116D599D74829D9D": {
+  "z": -1470,
+  "x": -84330.0,
+  "y": -160450.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "50AFB874425DEB2736483498A47342C1": {
+  "z": 1290,
+  "x": -39340.0,
+  "y": -166540.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "03FBB5A245425AC390F331ABF38B53D6": {
+  "z": -1915,
+  "x": -3910.0,
+  "y": -164200.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "DE9700F4486E864099AC32843CF30545": {
+  "z": -1820,
+  "x": 32920.0,
+  "y": -86950.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "B134272240DB1ABD46F9F89819768A60": {
+  "z": 1800,
+  "x": 5750.0,
+  "y": -124110.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "FC945A764F185C344D80E8B1651010B5": {
+  "z": 956,
+  "x": -36650.0,
+  "y": -69910.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "D2F62D2044B6ED23F0716AB7D7B1229A": {
+  "z": 2967,
+  "x": -29760.0,
+  "y": -109580.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "8987C41241A34D905E1C739F155DA6B3": {
+  "z": 180,
+  "x": -40640.0,
+  "y": -79040.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "7EFC4C6043F6395176DC259A22FE333B": {
+  "z": 3310,
+  "x": -36600.0,
+  "y": -130330.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "9198EC04474F00F88726329A4BADA694": {
+  "z": -1582,
+  "x": 29500.0,
+  "y": -109230.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "F746AFCF46DAEF6A8110AD809BBB0EA2": {
+  "z": 5080,
+  "x": -16760.0,
+  "y": -114480.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "FE5BCA2A491D8C6F7131DDA6FECEA4C0": {
+  "z": -450,
+  "x": -41470.0,
+  "y": -157590.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "307C6D7449880602B928FDAC09DFBA5B": {
+  "z": -1970,
+  "x": -39940.0,
+  "y": -149880.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "639F4DDA4D7E7DAABEF0358335835AE9": {
+  "z": -630,
+  "x": -38440.0,
+  "y": -63780.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "C4DC4BD5420FAECDF570C69A7BB76315": {
+  "z": -1955,
+  "x": -18670.0,
+  "y": -50530.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "D5A1894143AA84A238320BA4A36C4887": {
+  "z": -1130,
+  "x": -39670.0,
+  "y": -47310.0,
+  "class": "BP_LevelObject_Relic_LeafMomonga_C"
+ },
+ "D6B00DCE4BE2EE5716E3338E8972B1A8": {
+  "z": -343,
+  "x": -903490.0,
+  "y": -413810.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "CAF156F54CCFF99B95680EB4EAC87131": {
+  "z": -1570,
+  "x": -872080.0,
+  "y": -374080.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "30D134AB41CFD20CCE28EEBC4E31C61F": {
+  "z": 9027,
+  "x": -769950.0,
+  "y": -305290.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "F715C8ED4EA61C8886C78097878B9233": {
+  "z": 4520,
+  "x": -740560.0,
+  "y": -246540.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "14234DC74933E98E9EE1C2881D606558": {
+  "z": 17648,
+  "x": -651870.0,
+  "y": -222000.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "55267EAE43F5EC301C9AF2A98CBC0C6A": {
+  "z": 14670,
+  "x": -580480.0,
+  "y": -292190.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "3FC6043F4D8029BA5A8EEA82AA5A5F8D": {
+  "z": 22457,
+  "x": -559820.0,
+  "y": -362810.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "C3D58E3046102506205D5EA0447A49F2": {
+  "z": 7160,
+  "x": -619190.0,
+  "y": -353480.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "82F627CD4F695F0A5E7A62BB727EDF33": {
+  "z": 32817,
+  "x": -697430.0,
+  "y": -360000.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "184EBC0644B9C8923DF26588FF8E7130": {
+  "z": 620,
+  "x": -720810.0,
+  "y": -359460.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "E34EF97C4B21C0A9F35397B55D11F147": {
+  "z": 950,
+  "x": -619910.0,
+  "y": -135650.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "D43F22AE48EBCB504EE00E8476788DC0": {
+  "z": 5390,
+  "x": -566500.0,
+  "y": -151680.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "295A5FC1429C4727D17E92ACBE9746A0": {
+  "z": 3845,
+  "x": -570220.0,
+  "y": -173120.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "112FF3FE406DFA679B469AA6080CF501": {
+  "z": 3001,
+  "x": -564930.0,
+  "y": -230160.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "225AE7CB416393A11C016581B32E0EC7": {
+  "z": 8252,
+  "x": -814680.0,
+  "y": -383050.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "2B05D46B4777203BE63B7AA893DCC1CE": {
+  "z": 4730,
+  "x": -847130.0,
+  "y": -432930.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "2B421ADA4514F88BCF191BA9281076EF": {
+  "z": 13630,
+  "x": -870010.0,
+  "y": -413650.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "F50DDCC848745DFDF67BEEA9B3547AEA": {
+  "z": -33,
+  "x": -544490.0,
+  "y": -286940.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "9D9B6A92482673D82B5CE2B26260AC8E": {
+  "z": 60,
+  "x": -502430.0,
+  "y": -384330.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "AA0B92D9461DE587567AC69CD0D94DEA": {
+  "z": -710,
+  "x": -511450.0,
+  "y": -385230.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "B879AD684DC976C70009A9BF3FB62CE8": {
+  "z": -2050,
+  "x": -572100.0,
+  "y": -399660.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "B9E61EAF4C5B95443268AFBB0442CF88": {
+  "z": 7490,
+  "x": -590660.0,
+  "y": -486560.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "CE5FD82F48F7858D69588B98E702DC77": {
+  "z": -1685,
+  "x": -600050.0,
+  "y": -490560.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "A1E20D7147BB192340FDC2B48BA964D6": {
+  "z": 36455,
+  "x": -748650.0,
+  "y": -395270.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "5A83C71946985F46CAC3F59100099BE1": {
+  "z": 7818,
+  "x": -772070.0,
+  "y": -397300.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "ECE41F48405D99D3ACD6BEAFCEDFDBEA": {
+  "z": -80,
+  "x": -769310.0,
+  "y": -450000.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "56199DC142544C1E931F559BD71CA6C3": {
+  "z": 9872,
+  "x": -778550.0,
+  "y": -462420.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "EC25A49D404EFF603DF52B933E59EC46": {
+  "z": 14030,
+  "x": -891380.0,
+  "y": -467810.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "D31A23B841921E07753E73BD11AC9A37": {
+  "z": 16970,
+  "x": -699730.0,
+  "y": -324580.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "6AC77A2146CA0E3246C732AADC7F35A8": {
+  "z": 1505,
+  "x": -659810.0,
+  "y": -290910.0,
+  "class": "BP_LevelObject_Relic_Monkey_C"
+ },
+ "6269CE914FA3BE71FF8C0CBC165989EA": {
+  "z": -1696,
+  "x": -110780.0,
+  "y": 324060.0,
+  "class": "BP_LevelObject_Relic_Mutant_C"
+ },
+ "DB520EC04A7872206EEB8CBEFA2EC36D": {
+  "z": 18809,
+  "x": -89530.0,
+  "y": 270350.0,
+  "class": "BP_LevelObject_Relic_Mutant_C"
+ },
+ "865B21D541401445212352819BC7A290": {
+  "z": 11500,
+  "x": -257580.0,
+  "y": 185030.0,
+  "class": "BP_LevelObject_Relic_Mutant_C"
+ },
+ "A7B892CB4581D24E943A6983411DFC42": {
+  "z": -210,
+  "x": -145050.0,
+  "y": 89690.0,
+  "class": "BP_LevelObject_Relic_Mutant_C"
+ },
+ "77036F7840E3CF7491FA3681B0E3D47E": {
+  "z": 51082,
+  "x": -795780.0,
+  "y": 50060.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "0AB95D904B0114AF3080BBACD7877192": {
+  "z": 46875,
+  "x": -812670.0,
+  "y": 62770.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "AD6F4C8E4D257C7ED4608AB2F6CA8BF1": {
+  "z": 47350,
+  "x": -835680.0,
+  "y": 56120.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "600B61B04057D1B55442AB89E6499502": {
+  "z": 50380,
+  "x": -813100.0,
+  "y": 41850.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "BC93D4C94691FCC415BA7FB88AB7EF7E": {
+  "z": 43660,
+  "x": -833940.0,
+  "y": 22380.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "7D3CF5BF4FF77D0868278693EE0419A7": {
+  "z": 42455,
+  "x": -840380.0,
+  "y": 5090.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "5A1C5AAC4CE7509B66A8BFBF8672731F": {
+  "z": 38290,
+  "x": -816830.0,
+  "y": -2350.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "85EE559A4C3806FB292BD488055327CE": {
+  "z": 39260,
+  "x": -838150.0,
+  "y": -19220.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "5AC086654E0956BDEFB3FE9251CA7429": {
+  "z": 47780,
+  "x": -842940.0,
+  "y": -32440.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "02B78ABD4D73CE8403312380DC5D3A08": {
+  "z": 37795,
+  "x": -810720.0,
+  "y": -22400.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "88F0B95F412950EE61CEEAB6411CB8D1": {
+  "z": 49355,
+  "x": -838520.0,
+  "y": -8810.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "B2AC7F584D263BDDD1BFF5AA1433CC9D": {
+  "z": 46850,
+  "x": -840290.0,
+  "y": -48800.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "4C05E4D14A5D9493F184938FEC8DAE0B": {
+  "z": 43030,
+  "x": -833910.0,
+  "y": -78770.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "CEF5FDA743217E26AF996DB991F95A4A": {
+  "z": 49730,
+  "x": -826120.0,
+  "y": -96960.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "0601D9B648D547A6B127D998DDADF026": {
+  "z": 55325,
+  "x": -805107.0,
+  "y": -109978.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "B89906D04B24E78D995F22AC92521647": {
+  "z": 49025,
+  "x": -794820.0,
+  "y": -107900.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "BC657573438DF164C8F61C883E233D5F": {
+  "z": 54830,
+  "x": -741021.77,
+  "y": -102582.99,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "0EE0DA3D45057D1D4AC1579BABAB07E6": {
+  "z": 48220,
+  "x": -729500.0,
+  "y": -92910.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "3BA4ED4149BBC946404C7DA4BE528E6A": {
+  "z": 46207,
+  "x": -752078.45,
+  "y": -82057.9,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "D5668B56464412953B46188B055120F4": {
+  "z": 28900,
+  "x": -751900.0,
+  "y": -64560.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "F5B8F2904363D32224AB06B7CEAAA859": {
+  "z": 29480,
+  "x": -776180.0,
+  "y": -55950.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "3CC54EE94CDBA7071ECC5FA31FE1C67E": {
+  "z": 30290,
+  "x": -786660.0,
+  "y": -34190.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "677502114E722F46D7666BB897355A45": {
+  "z": 28860,
+  "x": -753200.0,
+  "y": -26060.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "00457007467EB67682B01C803F05D60F": {
+  "z": 43249,
+  "x": -762729.0,
+  "y": 5168.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "D583232C4570323172BE9ABD43658A4F": {
+  "z": 42250,
+  "x": -749300.0,
+  "y": -1770.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "CF9A0804478698E22C89C38DA792EECA": {
+  "z": 43460,
+  "x": -776370.0,
+  "y": 41610.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "8D1596D04C7BE0B7FD432CA56ABBADF9": {
+  "z": 46610,
+  "x": -807550.0,
+  "y": 46200.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "63D60306458A491003F0719143172E5C": {
+  "z": 40548,
+  "x": -790410.0,
+  "y": 8200.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "DD2CEEE44CFCB77C8D296A9F9E0EEBAF": {
+  "z": 39260,
+  "x": -777430.0,
+  "y": -3440.0,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "68FA589346D6CA6FD1C498B9C3DE2992": {
+  "z": 58129,
+  "x": -797526.44,
+  "y": -74016.04,
+  "class": "BP_LevelObject_Relic_NegativeKoala_C"
+ },
+ "ACAAADBE493C143A48C8809E3D93B8FD": {
+  "z": 17854,
+  "x": -310470.0,
+  "y": -51430.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "C91C7E2641E860FC2F2FDF81149DF63F": {
+  "z": 15650,
+  "x": -369870.0,
+  "y": -49330.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "B6E9DEC74A8491EA288C64A7925D755D": {
+  "z": 33072,
+  "x": -403680.0,
+  "y": -106880.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "52BAD1D3401CC7FE16CC6183E040FA40": {
+  "z": 14930,
+  "x": -417110.0,
+  "y": -151170.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "26B6D16944F2D72BF7F112AD3A65F404": {
+  "z": 970,
+  "x": 81420.0,
+  "y": 512960.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "47BAA52D4C73959A9D71E490F49C941B": {
+  "z": 36860,
+  "x": -273910.0,
+  "y": -133790.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "6E9E854341332FDF79074C97C5A8C5A7": {
+  "z": 21964,
+  "x": -341720.0,
+  "y": -90930.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "0CC8297B43C4BB5A7937B09F347EEB87": {
+  "z": 9570,
+  "x": -254730.0,
+  "y": -120200.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "67EC8C1A432CCAA5D042E8B1AFD508A2": {
+  "z": 36660,
+  "x": -307780.0,
+  "y": -118180.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "362CD8914499751D2C363294EA06BDFB": {
+  "z": 43710,
+  "x": -324270.0,
+  "y": -118760.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "AAB827314368ED4AF24A50B7A82CFEFD": {
+  "z": 1383,
+  "x": -244030.0,
+  "y": -65120.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "1D1B53924D75C41B88EB498D493A8EDB": {
+  "z": -1608,
+  "x": -1005226.47,
+  "y": -377002.92,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "4A5D64F94EE659355F6B76B50926B5E3": {
+  "z": 405,
+  "x": -298610.0,
+  "y": -8360.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "96A9DC2C462063F64AB985827FA2D999": {
+  "z": 2544,
+  "x": -321830.0,
+  "y": 5240.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "FCC945244F2DAEC68C0F8791647808B5": {
+  "z": -1960,
+  "x": -367430.0,
+  "y": 19600.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "3104D410475C7E6BD798EE92F1BE4C45": {
+  "z": -1712,
+  "x": -425590.0,
+  "y": -14550.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "5AD0BE414CEFBA290E53DA816EB10A58": {
+  "z": 10247,
+  "x": -396200.0,
+  "y": -30690.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "FEBE2E8E448C73CDD27E65B9EEAFBEFB": {
+  "z": 6014,
+  "x": -435830.0,
+  "y": -62690.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "7D4700144B8B45B598681EA44E8A6E27": {
+  "z": 2600,
+  "x": -460340.0,
+  "y": -85870.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "49438D0747707510808340AB4456B46B": {
+  "z": -1350,
+  "x": -457620.0,
+  "y": -113800.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "A91E67B04785D8A35B7D31B43E73887F": {
+  "z": -1827,
+  "x": -457470.0,
+  "y": -153860.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "D036C10448DCA4F9C51920AB0477C0D5": {
+  "z": -405,
+  "x": -414270.0,
+  "y": -211450.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "464C46984B941859E29354B3382CC2AC": {
+  "z": -863,
+  "x": -366560.0,
+  "y": -222270.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "59798CA34C58B235E83551BBC728F674": {
+  "z": -404,
+  "x": -316030.0,
+  "y": -221990.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "A106CA3A4132921D1421788A0E372503": {
+  "z": 2874,
+  "x": -272060.0,
+  "y": -209210.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "F9E1E7CF47FBC7AB72B7FD939DB12DED": {
+  "z": 2963,
+  "x": -242960.0,
+  "y": -192720.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "8A90507C4072E64608261F823D164154": {
+  "z": 2305,
+  "x": -227330.0,
+  "y": -122400.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "30CE394347741F55E161038548849ACA": {
+  "z": 570,
+  "x": -233370.0,
+  "y": -88310.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "E430975543459ED5CF7F4D9CD848A5C1": {
+  "z": -2085,
+  "x": -211180.0,
+  "y": -80990.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "2DB7E54844E5A67A1A20258F66C86F32": {
+  "z": 11243,
+  "x": -260590.0,
+  "y": -60160.0,
+  "class": "BP_LevelObject_Relic_Penguin_C"
+ },
+ "8AFD78F64DE3EE0FA32CC29CF08A144F": {
+  "z": 23680,
+  "x": 613210.0,
+  "y": -682200.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "DE7FB06344959655F1DB8B92D721E3BA": {
+  "z": 24399,
+  "x": 628840.0,
+  "y": -734890.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "8050FAF84E82BE1F3AEAC8BA3ED5EA27": {
+  "z": 18300,
+  "x": 547190.0,
+  "y": -627000.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "F85B89174DA21B1C3466E7955E81BD71": {
+  "z": 23700,
+  "x": 596020.0,
+  "y": -684650.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "4AE069374FE1BE1882C84EBA1F34DF8B": {
+  "z": 12920,
+  "x": 595450.0,
+  "y": -654580.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "02AF43A94CA238543A95AEB6BA70A8EF": {
+  "z": 18090,
+  "x": 583460.0,
+  "y": -626300.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "2DE430864B68D7614DF23695F6AAE9BC": {
+  "z": 23180,
+  "x": 569300.0,
+  "y": -609230.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "B5B0B91E466D4D58B74F6FA676754DA5": {
+  "z": 20440,
+  "x": 572700.0,
+  "y": -578520.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "B3602FA34F2F3A09A8D2A1AF895253C5": {
+  "z": 22170,
+  "x": 571460.0,
+  "y": -551830.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "81138D074970CDF0995EC5AAAEAA2B53": {
+  "z": 29080,
+  "x": 583580.0,
+  "y": -588460.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "EC03C1284556F4B3FEA106AAE359042E": {
+  "z": 30530,
+  "x": 602090.0,
+  "y": -567400.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "8F458616455579EDECE13294B3BF9334": {
+  "z": 27468,
+  "x": 522170.0,
+  "y": -673611.75,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "A4482C2E4A353DD3C8339D950781FCB5": {
+  "z": 16640,
+  "x": 487480.0,
+  "y": -667780.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "C43FD5DA46EB488FA540A3B1A671377A": {
+  "z": 14520,
+  "x": 544880.0,
+  "y": -594820.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "065326544F0F759E8B4F73AAFC51D320": {
+  "z": 44390,
+  "x": 511550.0,
+  "y": -509510.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "27B2044E4DECA02FF793A19592783949": {
+  "z": 21200,
+  "x": 485810.0,
+  "y": -581270.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "ED9336044B9061AFFD5784AB307D995F": {
+  "z": 16490,
+  "x": 507780.0,
+  "y": -594760.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "CD4C02AB44171188A552CDB5AE6209F3": {
+  "z": 31950,
+  "x": 498510.0,
+  "y": -602090.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "ED828F1B4784F83546088C959C05A069": {
+  "z": 18290,
+  "x": 493160.0,
+  "y": -596380.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "37951C794E86A97ACBA55C83DD816D28": {
+  "z": 11850,
+  "x": 534010.0,
+  "y": -623630.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "198F8B5A4DAE4871FD77159B02F039E6": {
+  "z": 21470,
+  "x": 476870.0,
+  "y": -675760.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "E937F3FD4EAAA1F3410D80B5642000E4": {
+  "z": 23150,
+  "x": 404510.0,
+  "y": -727990.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "3621201A4893F01C9A6478B5DEB9AD37": {
+  "z": 26590,
+  "x": 446020.0,
+  "y": -739140.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "2C7DCADA45814AE63CCE09AC7EDD38DE": {
+  "z": 20627,
+  "x": 487060.0,
+  "y": -745540.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "EF0F4E8442F209EF9627CB8ADF551270": {
+  "z": 27836,
+  "x": 539960.0,
+  "y": -713800.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "077DB4C045F1AD79A50C38959D401337": {
+  "z": 40240,
+  "x": 523930.0,
+  "y": -718530.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "9CDDF78F4DD4EBC66F4E1E9643E6495A": {
+  "z": 15879,
+  "x": 503870.0,
+  "y": -746550.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "D170338E40E76E9424252E80A650FE0E": {
+  "z": 24047,
+  "x": 557770.0,
+  "y": -730290.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "7E0B8F4C4042C4AF6F2BF3B5252798F5": {
+  "z": 19840,
+  "x": 589620.0,
+  "y": -737510.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "AC11511749840668F167998F57F9CF79": {
+  "z": 7500,
+  "x": 608820.0,
+  "y": -729750.0,
+  "class": "BP_LevelObject_Relic_PinkCat_C"
+ },
+ "27E0B8FA45C43FE7003164BCC65BBA4D": {
+  "z": 2840,
+  "x": -176630.0,
+  "y": -22150.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "03018C744099CEFE3F7D31A019C3CF5F": {
+  "z": 537,
+  "x": -168370.0,
+  "y": 35570.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "19149C8A449DE8C4912BFFB481ED3197": {
+  "z": -2054,
+  "x": -184840.0,
+  "y": 117270.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "AA55509E4E80064DCB6F7EB58E60763C": {
+  "z": -1810,
+  "x": -198800.0,
+  "y": 134470.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "4A576517406FF3CF3CDED796CE66FED0": {
+  "z": 5157,
+  "x": -162710.0,
+  "y": 156190.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "86429A604769CB8333A0E0A5C3C25482": {
+  "z": 213,
+  "x": -118800.0,
+  "y": 169000.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "1A21D84546A590DC085951811F052AE4": {
+  "z": -1369,
+  "x": -69650.0,
+  "y": 191650.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "FD26F8E24062DD098B3C9C8DDD1FA6BF": {
+  "z": 5643,
+  "x": -61750.0,
+  "y": 268730.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "96CC3E4B4BD6E40490B6A9A3FE231E33": {
+  "z": -1950,
+  "x": -99850.0,
+  "y": 338010.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "67C386864D394305CCF366BD2CEEE3D7": {
+  "z": -1722,
+  "x": -142710.0,
+  "y": 341980.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "8FB8E8C24E33845E1D9B559C540903A0": {
+  "z": 46,
+  "x": -203150.0,
+  "y": 287220.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "BC6DC8B249B060D90AB132931E64781D": {
+  "z": 1007,
+  "x": -247440.0,
+  "y": 260930.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "E80B33514769E9858FCABDA9EE97DC18": {
+  "z": -876,
+  "x": -216770.0,
+  "y": 237000.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "9C37027E4C89F228939D64B56D49ED4D": {
+  "z": 783,
+  "x": -261650.0,
+  "y": 186730.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "E4DC895A4809CAD321E4F1B0A762D780": {
+  "z": 1840,
+  "x": -285110.0,
+  "y": 152310.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "E53C4DDC47F735F570CAE5A1FC9D24A0": {
+  "z": 575,
+  "x": -268230.0,
+  "y": 116820.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "9756C138453B468C3B26448D2167EF38": {
+  "z": -1747,
+  "x": -241360.0,
+  "y": -14430.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "E7187E95416339D08476229E4FCB4C82": {
+  "z": 2223,
+  "x": -305320.0,
+  "y": 37250.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "0518F6424A75CAB98439E9A32A20469E": {
+  "z": 170,
+  "x": -357120.0,
+  "y": 31380.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "9A97B77840CDB73CB06569A80199F078": {
+  "z": -2028,
+  "x": -355920.0,
+  "y": 90270.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "6F6D56CC4F96DAE4E749DB8D1EA13E28": {
+  "z": -2010,
+  "x": -286910.0,
+  "y": 110730.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "90A3E5C240CF6231BE2598B82B1D4A85": {
+  "z": 2946,
+  "x": -319590.0,
+  "y": 44590.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "2C45D349426B352E86D09D9B8584CDDB": {
+  "z": -1280,
+  "x": -244510.0,
+  "y": 74600.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "C20023FA4C2E06F9807ACB8525065855": {
+  "z": 7215,
+  "x": -230880.0,
+  "y": 9040.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "FFBA90EB4408E8B124A8F18AB7E4C25B": {
+  "z": 1245,
+  "x": -243870.0,
+  "y": 131430.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "5F91D8544B3693B4A323E49BD374D9E7": {
+  "z": 1540,
+  "x": -161650.0,
+  "y": 153000.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "9C7C81E449689EED3EABBA8F46C202EC": {
+  "z": 5610,
+  "x": -139690.0,
+  "y": 216410.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "53C2C9B940F9E28FFA2A37998126002D": {
+  "z": 19520,
+  "x": -91500.0,
+  "y": 246590.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "FA3A6F7C41BA29D39EFB6489915E177C": {
+  "z": 3294,
+  "x": -106400.0,
+  "y": 291550.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "57AEBC7B4225C07755DF4BB2D2B5CC24": {
+  "z": -1467,
+  "x": -188890.0,
+  "y": 251370.0,
+  "class": "BP_LevelObject_Relic_SheepBall_C"
+ },
+ "6EF30CB4472A23B0EEAB539281DF907B": {
+  "z": 18192,
+  "x": -115332.18,
+  "y": 254417.5,
+  "class": "BP_LevelObject_Relic_C"
+ }
+}

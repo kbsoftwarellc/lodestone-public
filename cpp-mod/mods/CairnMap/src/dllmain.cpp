@@ -57,6 +57,7 @@
 
 #include "cairn_data.hpp"
 #include "cairn_relic_types.hpp"
+#include "cairn_relic_z.hpp"
 #include "cairn_project.hpp"
 
 namespace CairnMap
@@ -86,6 +87,13 @@ namespace CairnMap
     // times (CatchBelow). 5 by request; the Paldeck's own bonus tiers are the usual reason
     // to want a number here.
     inline int g_catch_below = 5;
+
+    // In-world marker (WorldMarker): an icon drawn ON SCREEN over the exact spot of the
+    // tracked Pal (live one, else its nearest unchecked spawn point) and the nearest
+    // effigy, once within WorldMarkerRange metres. Kenny 11-27: "an icon in my game
+    // pointing me exactly to the location".
+    inline bool g_world_marker = true;
+    inline double g_world_marker_range = 300.0;
 
     // How many EV stops brighter the minimap terrain is rendered at night
     // (MinimapTerrainNightBoost). The terrain is a LIT capture, so it is exactly as dark
@@ -235,6 +243,8 @@ inline std::wstring g_track_pal = L"SheepBall";
 inline int g_track_relic = -1;
 static_assert(std::size(Data::kEffigyType) == std::size(Data::kEffigies),
               "kEffigyType must stay parallel to kEffigies -- regenerate cairn_relic_types.hpp");
+static_assert(std::size(Data::kEffigyZ) == std::size(Data::kEffigies),
+              "kEffigyZ must stay parallel to kEffigies -- regenerate cairn_relic_z.hpp");
 // Placement: same two-letter anchor grid as the minimap, default TC (top-centre,
 // under vanilla's own compass bar). Margins push in from an edge.
 inline double g_compass_ax = 0.5;   // horizontal: 0 left, 0.5 centre, 1 right
@@ -1958,6 +1968,8 @@ inline bool g_wp_on = false;
             double wx{}, wy{};
             const wchar_t* icon{nullptr};
             Engine::FLinearColor_ color{};
+            double wz{};          // world height, when known (in-world marker)
+            bool has_z{false};
         };
         std::unordered_map<int, Nearest> m_nearest;
         // Live nearest-of-each for the actor-based compass layers (eggs/dungeons/lucky),
@@ -1968,8 +1980,66 @@ inline bool g_wp_on = false;
         {
             double wx = 0.0, wy = 0.0, dist = 0.0;
             bool valid = false;
+            double wz = 0.0;
+            bool has_z = false;
         };
-        std::unordered_map<int, LiveNearest> m_live_nearest;   // layer id -> nearest actor
+        std::unordered_map<int, LiveNearest> m_live_nearest;
+        // ---- Track-one-Pal, live (Kenny 11-27: "I see all the markers but never see
+        // mimogs") -- a marked spawn area rolls Mimog only ~3% of the time. So: point at a
+        // real one when the character scan sees it, and once you reach a marked point with
+        // none there, hide it for kTrackForget (the area re-rolls later) so the next one
+        // takes over. Game thread (or the fallback driver under the state lock) only.
+        struct TrackPt
+        {
+            double x, y, z;
+        };
+        std::vector<TrackPt> m_track_pts;   // every kept spawn point (place_tracked_pal)
+        std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> m_track_cleared;
+        bool m_track_seen = false;          // a live one is the current target
+        static constexpr double kTrackReachUU = 5000.0;      // 50 m: "you got there"
+        static constexpr double kTrackOccupiedUU = 15000.0;  // a live one this close keeps the point
+        static constexpr auto kTrackForget = std::chrono::minutes(10);
+        static auto track_key(double x, double y) -> uint64_t
+        {
+            return (static_cast<uint64_t>(static_cast<uint32_t>(static_cast<int32_t>(std::lround(x)))) << 32) |
+                   static_cast<uint32_t>(static_cast<int32_t>(std::lround(y)));
+        }
+        auto track_cleared(double x, double y, std::chrono::steady_clock::time_point now) -> bool
+        {
+            auto it = m_track_cleared.find(track_key(x, y));
+            if (it == m_track_cleared.end())
+            {
+                return false;
+            }
+            if (now - it->second > kTrackForget)
+            {
+                m_track_cleared.erase(it);
+                return false;
+            }
+            return true;
+        }
+        // Effigy height by position (kEffigyZ parallels kEffigies; INT32_MIN = unknown).
+        std::unordered_map<uint64_t, int32_t> m_effigy_z;
+        auto effigy_z(double x, double y, double& out) -> bool
+        {
+            if (m_effigy_z.empty())
+            {
+                for (size_t i = 0; i < std::size(Data::kEffigies); ++i)
+                {
+                    if (Data::kEffigyZ[i] != INT32_MIN)
+                    {
+                        m_effigy_z[track_key(Data::kEffigies[i].x, Data::kEffigies[i].y)] = Data::kEffigyZ[i];
+                    }
+                }
+            }
+            auto it = m_effigy_z.find(track_key(x, y));
+            if (it == m_effigy_z.end())
+            {
+                return false;
+            }
+            out = it->second;
+            return true;
+        }   // layer id -> nearest actor
         std::chrono::steady_clock::time_point m_next_live_scan{};
         // Live-actor candidates for refresh_live_nearest. The object-array walk that finds
         // them (scan_live_candidates) runs on UE4SS's update thread; the game thread only
@@ -2170,6 +2240,12 @@ inline bool g_wp_on = false;
             double catch_below = g_catch_below;
             num(L"CatchBelow", catch_below, 1.0, 99.0);
             g_catch_below = static_cast<int>(catch_below);
+            {
+                double wm = g_world_marker ? 1.0 : 0.0;
+                num(L"WorldMarker", wm, 0.0, 1.0);
+                g_world_marker = wm >= 0.5;
+                num(L"WorldMarkerRange", g_world_marker_range, 10.0, 5000.0);
+            }
             num(L"CompassX", g_compass_ox, 0.0, 4000.0);
             num(L"CompassY", g_compass_oy, 0.0, 4000.0);
             num(L"MenuButtonSize", g_menu_btn_size, 24.0, 96.0);
@@ -2460,6 +2536,11 @@ inline bool g_wp_on = false;
             f << L"# nearest wild Pal of a species you have caught fewer than CatchBelow of.\n";
             f << L"# Restart to apply.\n";
             f << L"CatchBelow=" << g_catch_below << L"\n";
+            f << L"#\n";
+            f << L"# In-world marker: an icon on screen right over the tracked Pal (or its nearest\n";
+            f << L"# unchecked spawn point) and the nearest effigy, within WorldMarkerRange metres.\n";
+            f << L"WorldMarker=" << (g_world_marker ? 1 : 0) << L"\n";
+            f << L"WorldMarkerRange=" << g_world_marker_range << L"\n";
             f << L"#\n";
             f << L"# Waypoint (F3): a sticky 'go here' target on the compass. On=1 when set;\n";
             f << L"# X/Y are its world coordinates. F3 sets it to the nearest marker, or clears it.\n";
@@ -4781,6 +4862,72 @@ inline bool g_wp_on = false;
         // fewer than CatchBelow times. Same actor list as the lucky scan. Skipped: anything
         // with an owner (party, base workers, other players' Pals), non-Pals (humans, the
         // players themselves), and Pals the game marks uncapturable or dead.
+        // The nearest WILD, living Pal of the tracked species in the scanned character list
+        // (same reads as nearest_uncaught_among below).
+        auto nearest_tracked_among(const std::vector<UObject*>& chars, double px, double py, double& out_wx,
+                                   double& out_wy, double& out_wz, double& out_dist) -> bool
+        {
+            const SaveParamOffsets& off = save_param_offsets();
+            if (off.character_id < 0 || g_track_pal.empty())
+            {
+                return false;
+            }
+            const std::wstring want = Collected::species_key(g_track_pal);
+            bool have = false;
+            double best = 0.0;
+            for (auto* c : chars)
+            {
+                if (!c || c == m_local_pawn)
+                {
+                    continue;
+                }
+                auto** comp = c->GetValuePtrByPropertyNameInChain<UObject*>(STR("CharacterParameterComponent"));
+                if (!comp || !*comp)
+                {
+                    continue;
+                }
+                auto** indiv = (*comp)->GetValuePtrByPropertyNameInChain<UObject*>(STR("IndividualParameter"));
+                if (!indiv || !*indiv)
+                {
+                    continue;
+                }
+                const auto* save = (*indiv)->GetValuePtrByPropertyNameInChain<uint8_t>(STR("SaveParameter"));
+                if (!save || !is_wild(*indiv))
+                {
+                    continue;
+                }
+                const FName id = *reinterpret_cast<const FName*>(save + off.character_id);
+                if (Collected::species_key(id.ToString()) != want)
+                {
+                    continue;
+                }
+                Engine::ParamsIsRarePal dead{};
+                if (Engine::call(*indiv, L"IsDead", dead) && dead.ReturnValue)
+                {
+                    continue;
+                }
+                double wx = 0, wy = 0, wz = 0;
+                if (!Engine::actor_location(c, wx, wy, wz) || (wx == 0.0 && wy == 0.0))
+                {
+                    continue;
+                }
+                const double d2 = (wx - px) * (wx - px) + (wy - py) * (wy - py);
+                if (!have || d2 < best)
+                {
+                    have = true;
+                    best = d2;
+                    out_wx = wx;
+                    out_wy = wy;
+                    out_wz = wz;
+                }
+            }
+            if (have)
+            {
+                out_dist = std::sqrt(best);
+            }
+            return have;
+        }
+
         auto nearest_uncaught_among(const std::vector<UObject*>& chars, UObject* ctx, double px, double py,
                                     double& out_wx, double& out_wy, double& out_dist, std::wstring& out_species,
                                     int32_t& out_count) -> bool
@@ -4993,7 +5140,8 @@ inline bool g_wp_on = false;
             // empty list without walking.
             const bool wanted =
                 is_layer_on(kKinds[kind].layer) || (kind == kLivePal && is_layer_on(kCatchLayer)) ||
-                (kind == kLiveDungeon && is_layer_on(kBossDungeonLayer));
+                (kind == kLiveDungeon && is_layer_on(kBossDungeonLayer)) ||
+                (kind == kLivePal && !g_track_pal.empty() && is_layer_on(kPalSpeciesLayer));
             if (wanted)
             {
                 std::vector<UObject*> objs;
@@ -5188,6 +5336,83 @@ inline bool g_wp_on = false;
                     }
                     m_live_nearest[kCatchLayer] = cn;
                 }
+                // Track-one-Pal, live: a real one beats every marker; reached markers with
+                // none there are hidden for kTrackForget and the next nearest takes over.
+                {
+                    LiveNearest tn{};
+                    if (!g_track_pal.empty() && is_layer_on(kPalSpeciesLayer))
+                    {
+                        double lx = 0, ly = 0, lz = 0, ld = 0;
+                        const bool seen = nearest_tracked_among(objs, px, py, lx, ly, lz, ld);
+                        size_t newly = 0;
+                        for (const auto& t : m_track_pts)
+                        {
+                            const double dx = t.x - px, dy = t.y - py;
+                            if (dx * dx + dy * dy > kTrackReachUU * kTrackReachUU)
+                            {
+                                continue;
+                            }
+                            if (seen && std::hypot(lx - t.x, ly - t.y) < kTrackOccupiedUU)
+                            {
+                                continue;   // one is right here: keep the point
+                            }
+                            if (m_track_cleared.try_emplace(track_key(t.x, t.y), now).second)
+                            {
+                                ++newly;
+                            }
+                        }
+                        if (newly)
+                        {
+                            Output::send<LogLevel::Default>(
+                                STR("[Lodestone] tracked Pal '{}': reached {} spawn point(s) with none there -- "
+                                    "hidden for 10 min ({} hidden)\n"),
+                                g_track_pal.c_str(), newly, m_track_cleared.size());
+                        }
+                        if (seen)
+                        {
+                            tn.valid = true;
+                            tn.wx = lx;
+                            tn.wy = ly;
+                            tn.wz = lz;
+                            tn.has_z = true;
+                            tn.dist = ld;
+                            if (!m_track_seen)
+                            {
+                                Output::send<LogLevel::Default>(
+                                    STR("[Lodestone] tracked Pal '{}' SPOTTED live, {:.0f}m away\n"),
+                                    g_track_pal.c_str(), ld / 100.0);
+                            }
+                            m_track_seen = true;
+                        }
+                        else
+                        {
+                            m_track_seen = false;
+                            double best = 0.0;
+                            for (const auto& t : m_track_pts)
+                            {
+                                if (track_cleared(t.x, t.y, now))
+                                {
+                                    continue;
+                                }
+                                const double d2 = (t.x - px) * (t.x - px) + (t.y - py) * (t.y - py);
+                                if (!tn.valid || d2 < best)
+                                {
+                                    tn.valid = true;
+                                    best = d2;
+                                    tn.wx = t.x;
+                                    tn.wy = t.y;
+                                    tn.wz = t.z;
+                                    tn.has_z = true;
+                                }
+                            }
+                            if (tn.valid)
+                            {
+                                tn.dist = std::sqrt(best);
+                            }
+                        }
+                    }
+                    m_live_nearest[kPalSpeciesLayer] = tn;
+                }
                 // Lucky: the range-alert latch (fires once per approach).
                 const bool in_range = ln.valid && ln.dist < kLuckyRangeUU;
                 const bool out_range = !ln.valid || ln.dist > kLuckyRangeUU + kLuckyHystUU;
@@ -5287,7 +5512,7 @@ inline bool g_wp_on = false;
             // Mimog -- dungeon/mimic spawners placed elsewhere). Scoring them set best = 100%,
             // the 50% cut then dropped every overworld area, and the map showed 0 of 0
             // (Kenny, 11-27). So only areas with a point you can walk to are scored.
-            std::unordered_map<uint32_t, std::vector<std::pair<double, double>>> area_pts;
+            std::unordered_map<uint32_t, std::vector<TrackPt>> area_pts;
             size_t interior = 0;
             for (auto& kv : placement->GetRowMap())
             {
@@ -5312,7 +5537,7 @@ inline bool g_wp_on = false;
                 }
                 if (wx != 0.0 || wy != 0.0)
                 {
-                    area_pts[key].push_back({wx, wy});
+                    area_pts[key].push_back({wx, wy, wz});
                 }
             }
             double best_share = 0.0;
@@ -5338,7 +5563,7 @@ inline bool g_wp_on = false;
                 return 0;
             }
             const double keep_share = best_share * 0.5;
-            std::vector<std::pair<double, double>> pts;
+            std::vector<TrackPt> pts;
             size_t kept_areas = 0;
             bool any_day = false, any_night = false, any_time = false;
             for (const auto& [k, v] : area_pts)
@@ -5354,23 +5579,26 @@ inline bool g_wp_on = false;
                 }
             }
             const size_t total = pts.size();
+            m_track_pts = pts;   // the live tracker (refresh_live_nearest) works from all of them
+            const auto now_c = std::chrono::steady_clock::now();
+            std::erase_if(pts, [&](const TrackPt& t) { return track_cleared(t.x, t.y, now_c); });
+            const size_t checked = total - pts.size();
             double px = 0, py = 0, pz = 0;
             if (player_pos(px, py, pz) && pts.size() > kPalMaxDots)
             {
                 std::nth_element(pts.begin(), pts.begin() + kPalMaxDots, pts.end(),
-                                 [px, py](const auto& a, const auto& b) {
-                                     const double da = (a.first - px) * (a.first - px) +
-                                                       (a.second - py) * (a.second - py);
-                                     const double db = (b.first - px) * (b.first - px) +
-                                                       (b.second - py) * (b.second - py);
+                                 [px, py](const TrackPt& a, const TrackPt& b) {
+                                     const double da = (a.x - px) * (a.x - px) + (a.y - py) * (a.y - py);
+                                     const double db = (b.x - px) * (b.x - px) + (b.y - py) * (b.y - py);
                                      return da < db;
                                  });
                 pts.resize(kPalMaxDots);
             }
             size_t shown = 0;
             const wchar_t* const pal_icon = track_pal_icon();
-            for (const auto& [wx, wy] : pts)
+            for (const auto& t : pts)
             {
+                const double wx = t.x, wy = t.y;
                 const auto pos = project(wx, wy);
                 if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                 {
@@ -5388,9 +5616,9 @@ inline bool g_wp_on = false;
             Output::send<LogLevel::Default>(
                 STR("[Lodestone] tracked Pal '{}': nearest {} of {} spawn points in the {} likeliest of {} areas "
                     "(best {:.0f}% of an area's spawns, kept >= {:.0f}%; {}; {} dungeon-interior points cut; "
-                    "{} areas with no map point skipped)\n"),
+                    "{} areas with no map point skipped; {} checked with none there, hidden for now)\n"),
                 g_track_pal.c_str(), shown, total, kept_areas, listed, best_share * 100.0, keep_share * 100.0, when,
-                interior, unplaced);
+                interior, unplaced, checked);
             return shown;
         }
 
@@ -6194,7 +6422,12 @@ inline bool g_wp_on = false;
                 {
                     deg += 360.0;
                 }
-                m_nearest[d.layer_id] = Nearest{dist, deg, d.wx, d.wy, d.icon, d.color};
+                Nearest nn{dist, deg, d.wx, d.wy, d.icon, d.color};
+                if (d.layer_id == kEffigyLayer)
+                {
+                    nn.has_z = effigy_z(d.wx, d.wy, nn.wz);
+                }
+                m_nearest[d.layer_id] = nn;
             }
             m_have_player = true;
         }
@@ -8430,6 +8663,295 @@ inline bool g_wp_on = false;
 
         // Drop the compass caches WITHOUT touching the (dead) widgets -- pointer writes
         // only, safe after the HUD that owned them was destroyed.
+        // ---- In-world marker (WorldMarker) -------------------------------------------
+        // A full-screen canvas on the HUD; each target's 3-D point is projected with UMG's
+        // own WidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition every frame, so the
+        // icon sits on the spot (height included). Behind the camera = hidden (the compass
+        // covers that). Slot 0 = tracked Pal, 1 = nearest effigy.
+        struct ParamsProjectToWidget
+        {
+            UObject* PlayerController{};       // 0x00
+            Engine::FVector_ WorldLocation{};  // 0x08
+            Engine::FVector2D_ ScreenPosition{};   // 0x20
+            bool bPlayerViewportRelative{};    // 0x30
+            bool ReturnValue{};                // 0x31
+        };
+        struct WorldMark
+        {
+            UObject* icon = nullptr;
+            UObject* icon_slot = nullptr;
+            UObject* label = nullptr;
+            UObject* label_slot = nullptr;
+            const wchar_t* cur_icon = nullptr;
+            bool styled = false;
+            std::wstring cur_text;
+            bool shown = false;
+        };
+        UObject* m_wm_canvas = nullptr;
+        int32_t m_wm_canvas_idx = -1;
+        std::wstring m_wm_root_name;
+        WorldMark m_wm[2];
+        std::chrono::steady_clock::time_point m_next_wm_scan{};
+        UObject* m_wll = nullptr;   // Default__WidgetLayoutLibrary
+        int m_wll_ok = -1;          // -1 unchecked, 0 layout mismatch (never call), 1 ok
+
+        auto drop_world_marks() -> void
+        {
+            m_wm_canvas = nullptr;
+            m_wm_canvas_idx = -1;
+            for (auto& m : m_wm)
+            {
+                m = WorldMark{};
+            }
+        }
+
+        auto build_world_marks() -> void
+        {
+            if (m_wm_canvas && !slot_live(m_wm_canvas, m_wm_canvas_idx))
+            {
+                drop_world_marks();
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (!g_world_marker || (m_wm_canvas && now < m_next_wm_scan))
+            {
+                return;
+            }
+            m_next_wm_scan = now + std::chrono::milliseconds(5000);
+            UObject* root = hud_root();
+            if (!root)
+            {
+                return;
+            }
+            const std::wstring root_name = root->GetFullName();
+            if (m_wm_canvas)
+            {
+                if (m_wm_root_name == root_name)
+                {
+                    return;
+                }
+                drop_world_marks();   // HUD rebuilt
+            }
+            auto* canvas_class =
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.CanvasPanel"));
+            auto* image_class = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.Image"));
+            auto* txt_class = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.TextBlock"));
+            if (!canvas_class || !image_class || !txt_class)
+            {
+                return;
+            }
+            sweep_stale_hud_canvas(root, L"Lodestone_WorldMarks");
+            {
+                FStaticConstructObjectParameters params{canvas_class, root};
+                params.Name = FName(STR("Lodestone_WorldMarks"));
+                m_wm_canvas = UObjectGlobals::StaticConstructObject(params);
+            }
+            if (!m_wm_canvas)
+            {
+                return;
+            }
+            Engine::ParamsAddChildToCanvas add{m_wm_canvas, nullptr};
+            if (!Engine::call(root, L"AddChildToCanvas", add) || !add.ReturnValue)
+            {
+                m_wm_canvas = nullptr;
+                return;
+            }
+            m_wm_canvas_idx = m_wm_canvas->GetInternalIndex();
+            {
+                UObject* slot = add.ReturnValue;
+                Engine::ParamsSetAnchors fa{0, 0, 1, 1};   // stretch over the whole viewport
+                Engine::call(slot, L"SetAnchors", fa);
+                Engine::ParamsSetOffsets fo{0.0f, 0.0f, 0.0f, 0.0f};
+                Engine::call(slot, L"SetOffsets", fo);
+                Engine::ParamsSetZOrder z{40};
+                Engine::call(slot, L"SetZOrder", z);
+                Engine::ParamsSetVisibility v{Engine::Vis_HitTestInvisible};
+                Engine::call(m_wm_canvas, L"SetVisibility", v);
+            }
+            auto add_child = [&](UObject* w, double ax, double ay) -> UObject* {
+                Engine::ParamsAddChildToCanvas a{w, nullptr};
+                if (!Engine::call(m_wm_canvas, L"AddChildToCanvas", a) || !a.ReturnValue)
+                {
+                    return nullptr;
+                }
+                Engine::ParamsSetAnchors an{0, 0, 0, 0};
+                Engine::call(a.ReturnValue, L"SetAnchors", an);
+                Engine::ParamsSetAlignment al{{ax, ay}};
+                Engine::call(a.ReturnValue, L"SetAlignment", al);
+                return a.ReturnValue;
+            };
+            for (auto& m : m_wm)
+            {
+                FStaticConstructObjectParameters ip{image_class, m_wm_canvas};
+                m.icon = UObjectGlobals::StaticConstructObject(ip);
+                m.icon_slot = m.icon ? add_child(m.icon, 0.5, 1.0) : nullptr;   // bottom tip on the spot
+                FStaticConstructObjectParameters tp{txt_class, m_wm_canvas};
+                m.label = UObjectGlobals::StaticConstructObject(tp);
+                m.label_slot = m.label ? add_child(m.label, 0.5, 0.0) : nullptr;
+                if (m.label_slot)
+                {
+                    Engine::ParamsSetTextColor tc{{1.0f, 1.0f, 1.0f, 0.95f}, 0};
+                    Engine::call(m.label, L"SetColorAndOpacity", tc);
+                    Engine::ParamsSetJustification j{1};   // centre
+                    Engine::call(m.label, L"SetJustification", j);
+                    Engine::ParamsSetRenderScale rs{{0.6, 0.6}};
+                    Engine::call(m.label, L"SetRenderScale", rs);
+                }
+                for (UObject* w : {m.icon, m.label})
+                {
+                    if (w)
+                    {
+                        Engine::ParamsSetVisibility v{Engine::Vis_Collapsed};
+                        Engine::call(w, L"SetVisibility", v);
+                    }
+                }
+            }
+            m_wm_root_name = root_name;
+            Output::send<LogLevel::Default>(STR("[Lodestone] world marker built on {}\n"), root_name);
+        }
+
+        auto hide_world_mark(WorldMark& m) -> void
+        {
+            if (!m.shown)
+            {
+                return;
+            }
+            for (UObject* w : {m.icon, m.label})
+            {
+                if (w)
+                {
+                    Engine::ParamsSetVisibility v{Engine::Vis_Collapsed};
+                    Engine::call(w, L"SetVisibility", v);
+                }
+            }
+            m.shown = false;
+        }
+
+        auto tick_world_marks() -> void
+        {
+            if (!m_wm_canvas || !slot_live(m_wm_canvas, m_wm_canvas_idx))
+            {
+                return;
+            }
+            UObject* const pc = live_mm_pc();
+            double px = 0, py = 0, pz = 0, yaw = 0;
+            bool has_yaw = false;
+            const bool active = g_world_marker && !m_map_shown && pc && player_pose(px, py, pz, yaw, has_yaw);
+            if (active && m_wll_ok < 0)
+            {
+                m_wll = UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr,
+                                                                   STR("/Script/UMG.Default__WidgetLayoutLibrary"));
+                m_wll_ok = verify_params(m_wll, L"ProjectWorldLocationToWidgetPosition",
+                                         {{L"PlayerController", 0x00},
+                                          {L"WorldLocation", 0x08},
+                                          {L"ScreenPosition", 0x20},
+                                          {L"bPlayerViewportRelative", 0x30},
+                                          {L"ReturnValue", 0x31}})
+                               ? 1
+                               : 0;
+                Output::send<LogLevel::Default>(STR("[Lodestone] world marker projection {}\n"),
+                                                m_wll_ok ? STR("ready") : STR("UNAVAILABLE (layout mismatch)"));
+            }
+            static constexpr int kMarkLayer[2] = {kPalSpeciesLayer, kEffigyLayer};
+            const bool icons = m_icons_ready.load(std::memory_order_acquire);
+            constexpr double isz = 34.0;
+            for (int i = 0; i < 2; ++i)
+            {
+                WorldMark& m = m_wm[i];
+                const int layer = kMarkLayer[i];
+                const Nearest* n = nullptr;
+                if (active && m_wll_ok == 1 && m.icon_slot && is_layer_on(layer))
+                {
+                    auto it = m_nearest.find(layer);
+                    if (it != m_nearest.end() && it->second.has_z)
+                    {
+                        n = &it->second;
+                    }
+                }
+                const double dx = n ? n->wx - px : 0.0, dy = n ? n->wy - py : 0.0;
+                const double hdist = std::sqrt(dx * dx + dy * dy);
+                if (!n || hdist > g_world_marker_range * 100.0)
+                {
+                    hide_world_mark(m);
+                    continue;
+                }
+                // Aim a little above the point: spawn points sit on the ground, effigies at their base.
+                ParamsProjectToWidget pp{pc, {n->wx, n->wy, n->wz + 120.0}, {}, false, false};
+                if (!Engine::call(m_wll, L"ProjectWorldLocationToWidgetPosition", pp) || !pp.ReturnValue)
+                {
+                    hide_world_mark(m);   // behind the camera
+                    continue;
+                }
+                const float sx = static_cast<float>(pp.ScreenPosition.X);
+                const float sy = static_cast<float>(pp.ScreenPosition.Y);
+                if (!m.styled || m.cur_icon != n->icon)
+                {
+                    const bool glyph = n->icon && Style::icon_is_glyph(n->icon);
+                    UObject* tex = (icons && n->icon) ? layer_texture(n->icon) : nullptr;
+                    if (tex)
+                    {
+                        Engine::ParamsSetBrushFromTexture b{tex, false};
+                        Engine::call(m.icon, L"SetBrushFromTexture", b);
+                        Style::make_image(m.icon, isz);
+                        Engine::ParamsSetColorAndOpacity c{glyph ? n->color
+                                                                 : Engine::FLinearColor_{1.0f, 1.0f, 1.0f, 1.0f}};
+                        Engine::call(m.icon, L"SetColorAndOpacity", c);
+                        m.cur_icon = n->icon;
+                    }
+                    else
+                    {
+                        Engine::ParamsSetBrushResourceObject none{nullptr};
+                        Engine::call(m.icon, L"SetBrushResourceObject", none);
+                        Style::make_round(m.icon, isz / 2.0);
+                        Engine::ParamsSetColorAndOpacity c{n->color};
+                        Engine::call(m.icon, L"SetColorAndOpacity", c);
+                        m.cur_icon = nullptr;
+                    }
+                    m.styled = tex != nullptr;
+                }
+                Engine::ParamsSetOffsets io{sx, sy, static_cast<float>(isz), static_cast<float>(isz)};
+                Engine::call(m.icon_slot, L"SetOffsets", io);
+                if (m.label_slot)
+                {
+                    const double dz = n->wz - pz;
+                    const double d3 = std::sqrt(hdist * hdist + dz * dz) / 100.0;
+                    std::wstring text = (i == 0) ? display_name(g_track_pal) : std::wstring(L"Effigy");
+                    if (i == 0 && !m_track_seen)
+                    {
+                        text += L" spawn";
+                    }
+                    wchar_t buf[32];
+                    std::swprintf(buf, std::size(buf), L"  %.0fm", d3);
+                    text += buf;
+                    if (std::abs(dz) >= 800.0)
+                    {
+                        std::swprintf(buf, std::size(buf), dz > 0 ? L"  (%.0fm up)" : L"  (%.0fm down)",
+                                      std::abs(dz) / 100.0);
+                        text += buf;
+                    }
+                    if (text != m.cur_text)
+                    {
+                        Engine::ParamsSetText st{FText(text.c_str())};
+                        Engine::call(m.label, L"SetText", st);
+                        m.cur_text = text;
+                    }
+                    Engine::ParamsSetOffsets lo{sx, sy + 2.0f, 320.0f, 30.0f};
+                    Engine::call(m.label_slot, L"SetOffsets", lo);
+                }
+                if (!m.shown)
+                {
+                    for (UObject* w : {m.icon, m.label})
+                    {
+                        if (w)
+                        {
+                            Engine::ParamsSetVisibility v{Engine::Vis_HitTestInvisible};
+                            Engine::call(w, L"SetVisibility", v);
+                        }
+                    }
+                    m.shown = true;
+                }
+            }
+        }
+
         auto drop_compass_caches() -> void
         {
             m_compass_canvas = nullptr;
@@ -9384,6 +9906,8 @@ inline bool g_wp_on = false;
                 // build_compass/tick_compass_strip every frame.
                 build_compass();
                 tick_compass_strip();
+                build_world_marks();
+                tick_world_marks();
                 // Time build vs tick separately to see which carries the residual cost
                 // (periodic FindAllOf in build, or per-frame work in tick). Only trivial
                 // locals here -- the MSVC __try rule forbids objects needing unwind; the
@@ -10149,12 +10673,30 @@ inline bool g_wp_on = false;
                     }
                     if (it->second.valid && is_layer_on(lm.layer))
                     {
-                        m_nearest[lm.layer] =
-                            Nearest{it->second.dist, 0.0, it->second.wx, it->second.wy, lm.icon, lm.color};
+                        m_nearest[lm.layer] = Nearest{it->second.dist, 0.0, it->second.wx, it->second.wy, lm.icon,
+                                                      lm.color, it->second.wz, it->second.has_z};
                     }
                     else
                     {
                         m_nearest.erase(lm.layer);
+                    }
+                }
+                // Tracked Pal: the live tracker's pick (a real one, else the nearest spawn
+                // point not yet checked) replaces the map-open pool's nearest dot.
+                {
+                    auto it = m_live_nearest.find(kPalSpeciesLayer);
+                    if (it != m_live_nearest.end())
+                    {
+                        if (it->second.valid && is_layer_on(kPalSpeciesLayer))
+                        {
+                            m_nearest[kPalSpeciesLayer] = Nearest{it->second.dist, 0.0,          it->second.wx,
+                                                                  it->second.wy,   track_pal_icon(), kPalColor,
+                                                                  it->second.wz,   it->second.has_z};
+                        }
+                        else
+                        {
+                            m_nearest.erase(kPalSpeciesLayer);
+                        }
                     }
                 }
                 // Sticky user waypoint (F3): one fixed world point the compass locks onto
@@ -10844,6 +11386,8 @@ inline bool g_wp_on = false;
                 // skip the compass whenever the (fragile) minimap tick AV'd mid-transition.
                 build_compass();
                 tick_compass_strip();
+                build_world_marks();
+                tick_world_marks();
                 build_minimap();
                 tick_minimap();
             }
