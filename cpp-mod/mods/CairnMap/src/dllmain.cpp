@@ -5156,44 +5156,23 @@ inline bool g_wp_on = false;
                 return a.total > 0.0 ? a.mine / a.total
                                      : (a.rows ? static_cast<double>(a.mine_rows) / a.rows : 0.0);
             };
-            double best_share = 0.0;
-            size_t listed = 0;
-            for (const auto& [k, a] : areas)
-            {
-                if (a.mine_rows)
-                {
-                    ++listed;
-                    best_share = std::max(best_share, share(a));
-                }
-            }
-            const double keep_share = best_share * 0.5;
-            std::unordered_set<uint32_t> spawner_keys;   // the likeliest areas only
-            bool any_day = false, any_night = false, any_time = false;
-            for (const auto& [k, a] : areas)
-            {
-                if (a.mine_rows && share(a) >= keep_share)
-                {
-                    spawner_keys.insert(k);
-                    any_day |= a.day;
-                    any_night |= a.night;
-                    any_time |= a.anytime;
-                }
-            }
-            if (spawner_keys.empty())
-            {
-                Output::send<LogLevel::Default>(STR("[Lodestone] tracked Pal '{}': no spawner rows\n"),
-                                                g_track_pal.c_str());
-                return 0;
-            }
-            // Collect every matching world point, then emit only the nearest kPalMaxDots
-            // to the player -- the full set (~400 for a common Pal) ballooned the widget
-            // pool and crashed Slate, and Kenny wants the closest ones, not all.
-            std::vector<std::pair<double, double>> pts;
+            // Gather each listing area's surface points BEFORE scoring. Some areas list the
+            // Pal but have no row in the placement table (MimicDog: 6 areas that roll only
+            // Mimog -- dungeon/mimic spawners placed elsewhere). Scoring them set best = 100%,
+            // the 50% cut then dropped every overworld area, and the map showed 0 of 0
+            // (Kenny, 11-27). So only areas with a point you can walk to are scored.
+            std::unordered_map<uint32_t, std::vector<std::pair<double, double>>> area_pts;
             size_t interior = 0;
             for (auto& kv : placement->GetRowMap())
             {
                 uint8_t* row = kv.Value;
-                if (!row || !spawner_keys.contains(*reinterpret_cast<uint32_t*>(row + 0x18)))   // SpawnerName
+                if (!row)
+                {
+                    continue;
+                }
+                const uint32_t key = *reinterpret_cast<uint32_t*>(row + 0x18);   // SpawnerName
+                const auto ait = areas.find(key);
+                if (ait == areas.end() || !ait->second.mine_rows)
                 {
                     continue;
                 }
@@ -5207,7 +5186,45 @@ inline bool g_wp_on = false;
                 }
                 if (wx != 0.0 || wy != 0.0)
                 {
-                    pts.push_back({wx, wy});
+                    area_pts[key].push_back({wx, wy});
+                }
+            }
+            double best_share = 0.0;
+            size_t listed = 0, unplaced = 0;
+            for (const auto& [k, a] : areas)
+            {
+                if (!a.mine_rows)
+                {
+                    continue;
+                }
+                ++listed;
+                if (!area_pts.contains(k))
+                {
+                    ++unplaced;   // lists the Pal, but no surface point on the map
+                    continue;
+                }
+                best_share = std::max(best_share, share(a));
+            }
+            if (!listed)
+            {
+                Output::send<LogLevel::Default>(STR("[Lodestone] tracked Pal '{}': no spawner rows\n"),
+                                                g_track_pal.c_str());
+                return 0;
+            }
+            const double keep_share = best_share * 0.5;
+            std::vector<std::pair<double, double>> pts;
+            size_t kept_areas = 0;
+            bool any_day = false, any_night = false, any_time = false;
+            for (const auto& [k, v] : area_pts)
+            {
+                const auto& a = areas[k];
+                if (share(a) >= keep_share)
+                {
+                    ++kept_areas;
+                    pts.insert(pts.end(), v.begin(), v.end());
+                    any_day |= a.day;
+                    any_night |= a.night;
+                    any_time |= a.anytime;
                 }
             }
             const size_t total = pts.size();
@@ -5244,9 +5261,10 @@ inline bool g_wp_on = false;
                                                                        : STR("DAY only");
             Output::send<LogLevel::Default>(
                 STR("[Lodestone] tracked Pal '{}': nearest {} of {} spawn points in the {} likeliest of {} areas "
-                    "(best {:.0f}% of an area's spawns, kept >= {:.0f}%; {}; {} dungeon-interior points cut)\n"),
-                g_track_pal.c_str(), shown, total, spawner_keys.size(), listed, best_share * 100.0,
-                keep_share * 100.0, when, interior);
+                    "(best {:.0f}% of an area's spawns, kept >= {:.0f}%; {}; {} dungeon-interior points cut; "
+                    "{} areas with no map point skipped)\n"),
+                g_track_pal.c_str(), shown, total, kept_areas, listed, best_share * 100.0, keep_share * 100.0, when,
+                interior, unplaced);
             return shown;
         }
 
