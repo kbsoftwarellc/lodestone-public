@@ -2915,6 +2915,53 @@ inline bool g_wp_on = false;
         int m_ft_total = -1;
         double m_applied_zoom = 1.0;
         std::optional<Project::Calibration> m_calibration;
+        // World Tree (11-27, Kenny's friend): the map screen has TWO bodies -- MainMap and
+        // Tree -- each showing its own box of MainWorld_5 (DT_WorldMapUIData
+        // landScapeRealPositionMin/Max, pak-decoded below; the live body's
+        // Min/MaxLandScapePosition override them when readable). One transform for
+        // everything drew the 47 Tree effigies (and Tree ore/chests/bosses) off the
+        // main map's top-left edge, and nothing on the Tree map. Now each point goes
+        // only to the body whose box holds it (vanilla: GetMapNameByWorldLocation), and
+        // the Tree body reuses the main pin fit: both bodies are the same widget at the
+        // same texture size, so a point's UV in its own box lands where the same UV
+        // would on the main map.
+        struct MapBounds
+        {
+            double min_x, min_y, max_x, max_y;
+        };
+        static constexpr MapBounds kMainBounds{-1099400.0, -724400.0, 349400.0, 724400.0};
+        static constexpr MapBounds kTreeBounds{347351.5, -818197.0, 689148.5, -476400.0};
+        MapBounds m_body_bounds[2] = {kMainBounds, kTreeBounds};
+        int m_map_kind = 0;            // body we draw on: 0 main, 1 World Tree
+        std::wstring m_map_name;       // its MapName, for the change log
+        bool m_tree_checked = false;   // Tree pin-vs-prediction check logged for this body
+
+        auto in_tree(double wx, double wy) const -> bool
+        {
+            const auto& t = m_body_bounds[1];
+            return wx >= t.min_x && wx <= t.max_x && wy >= t.min_y && wy <= t.max_y;
+        }
+
+        // World -> canvas on the body being drawn; NaN when the point belongs to the
+        // other map (every caller already drops NaN). Needs m_calibration.
+        auto project(double wx, double wy) const -> Project::Vec2
+        {
+            const int kind = in_tree(wx, wy) ? 1 : 0;
+            if (kind != m_map_kind)
+            {
+                const double nan = std::nan("");
+                return {nan, nan};
+            }
+            if (kind == 0)
+            {
+                return m_calibration->transform.apply(wx, wy);
+            }
+            const auto& m = m_body_bounds[0];
+            const auto& t = m_body_bounds[1];
+            const double qx = m.min_x + (wx - t.min_x) * (m.max_x - m.min_x) / (t.max_x - t.min_x);
+            const double qy = m.min_y + (wy - t.min_y) * (m.max_y - m.min_y) / (t.max_y - t.min_y);
+            return m_calibration->transform.apply(qx, qy);
+        }
         // The world->canvas transform is a fixed map property, but the runtime pin set is
         // unstable on a server (boss/FT pins drop out some opens). So we KEEP the best
         // calibration across map-body swaps; this flags a re-evaluation on a new body.
@@ -3080,6 +3127,11 @@ inline bool g_wp_on = false;
             int32_t body_idx = -1;
             int32_t mask_idx = -1;
             bool open = false;
+            int map_kind = 0;          // 0 main, 1 World Tree (see project)
+            std::wstring map_name;     // body MapName ("" if unreadable)
+            std::wstring screen_map;   // base CurrentDisplayMapName ("" if unreadable)
+            MapBounds bounds{};        // body Min/MaxLandScapePosition
+            bool have_bounds = false;
             // Every WBP_Map_Base_C instance (live when listed), for screen_canvas: gathered
             // on the update thread so the game thread's panel code never walks.
             std::vector<LiveCand> bases;
@@ -3270,7 +3322,7 @@ inline bool g_wp_on = false;
         auto find_map_timed(MapFind& f) -> void
         {
             PerfMax<std::atomic<long long>> perf{m_perf_find_map_max_us};
-            f.open = find_map(f.root, f.body_canvas, f.mask);
+            f.open = find_map(f.root, f.body_canvas, f.mask, &f);
             if (f.open)
             {
                 f.root_idx = f.root->GetInternalIndex();
@@ -3291,13 +3343,70 @@ inline bool g_wp_on = false;
 
         // Find the visible map body's root (screen-fixed canvas) + Canvas_MapBody
         // (pans/zooms) + Canvas_ForIcon_Mask.
-        auto find_map(UObject*& out_root, UObject*& out_map_body_canvas, UObject*& out_mask_canvas) -> bool
+        static auto read_body_bounds(UObject* body, MapBounds& out) -> bool
         {
+            // FVector2D is two doubles on UE5 (LWC): Min @0x520, Max @0x530.
+            auto* mn = body->GetValuePtrByPropertyNameInChain<double>(STR("MinLandScapePosition"));
+            auto* mx = body->GetValuePtrByPropertyNameInChain<double>(STR("MaxLandScapePosition"));
+            if (!mn || !mx)
+            {
+                return false;
+            }
+            const MapBounds b{mn[0], mn[1], mx[0], mx[1]};
+            for (double v : {b.min_x, b.min_y, b.max_x, b.max_y})
+            {
+                if (v != v || std::abs(v) > 4e6)
+                {
+                    return false;
+                }
+            }
+            if (b.max_x - b.min_x < 1e4 || b.max_y - b.min_y < 1e4)
+            {
+                return false;   // not filled yet (zeros before InitializeMapBody)
+            }
+            out = b;
+            return true;
+        }
+
+        auto find_map(UObject*& out_root, UObject*& out_map_body_canvas, UObject*& out_mask_canvas,
+                      MapFind* info = nullptr) -> bool
+        {
+            // Which map the screen shows (MainMap / Tree): WBP_Map_Base_C keeps one body per
+            // map in a WidgetSwitcher, and a switcher leaves its children's own Visibility
+            // alone -- so IsVisible is true for both and "most fast-travel pins" always
+            // picked the main body, even with the Tree map up.
+            std::wstring want;
+            {
+                std::vector<UObject*> bases;
+                known_objects(1, bases);
+                for (auto* b : bases)
+                {
+                    Engine::ParamsIsVisible bv{};
+                    if (!b || !Engine::call(b, L"IsVisible", bv) || !bv.ReturnValue)
+                    {
+                        continue;
+                    }
+                    if (auto* n = b->GetValuePtrByPropertyNameInChain<FName>(STR("CurrentDisplayMapName")))
+                    {
+                        want = n->ToString();
+                        if (want == L"None")
+                        {
+                            want.clear();
+                        }
+                        if (!want.empty())
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
             std::vector<UObject*> bodies;
             known_objects(0, bodies);
             UObject* best_root = nullptr;
             UObject* best_mask = nullptr;
             UObject* best_body_canvas = nullptr;
+            UObject* best_body = nullptr;
+            std::wstring best_name;
             int best_pins = 0;
             for (auto* body : bodies)
             {
@@ -3336,13 +3445,30 @@ inline bool g_wp_on = false;
                         ++pins;
                     }
                 }
-                if (pins + 1 > best_pins)
+                std::wstring name;
+                if (auto* mn = body->GetValuePtrByPropertyNameInChain<FName>(STR("MapName")))
                 {
-                    best_pins = pins + 1;
+                    name = mn->ToString();
+                }
+                // The body the screen shows wins outright; pins only break ties (pooled
+                // bodies) or decide when the map name can't be read.
+                const int score = pins + 1 + ((!want.empty() && name == want) ? 1000000 : 0);
+                if (score > best_pins)
+                {
+                    best_pins = score;
                     best_mask = mask;
                     best_body_canvas = body_canvas;
                     best_root = *root;
+                    best_body = body;
+                    best_name = std::move(name);
                 }
+            }
+            if (info && best_body)
+            {
+                info->map_name = best_name;
+                info->screen_map = want;
+                info->map_kind = best_name.find(L"Tree") != std::wstring::npos ? 1 : 0;
+                info->have_bounds = read_body_bounds(best_body, info->bounds);
             }
             out_root = best_root;
             out_map_body_canvas = best_body_canvas;
@@ -3716,7 +3842,7 @@ inline bool g_wp_on = false;
                 {
                     continue;
                 }
-                const auto pos = m_calibration->transform.apply(ex, ey);
+                const auto pos = project(ex, ey);
                 if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                 {
                     continue;
@@ -3821,7 +3947,7 @@ inline bool g_wp_on = false;
                     {
                         continue;
                     }
-                    const auto pos = m_calibration->transform.apply(g.ReturnValue.X, g.ReturnValue.Y);
+                    const auto pos = project(g.ReturnValue.X, g.ReturnValue.Y);
                     if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                     {
                         continue;
@@ -4323,7 +4449,7 @@ inline bool g_wp_on = false;
             size_t boss_shown = 0;
             for (const auto& [wx, wy] : boss_pts)
             {
-                const auto pos = m_calibration->transform.apply(wx, wy);
+                const auto pos = project(wx, wy);
                 if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                 {
                     continue;
@@ -4351,7 +4477,7 @@ inline bool g_wp_on = false;
             size_t shown = 0;
             for (const auto& [wx, wy] : pts)
             {
-                const auto pos = m_calibration->transform.apply(wx, wy);
+                const auto pos = project(wx, wy);
                 if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                 {
                     continue;
@@ -4459,7 +4585,7 @@ inline bool g_wp_on = false;
             size_t shown = 0;
             for (const auto& [wx, wy] : pts)
             {
-                const auto pos = m_calibration->transform.apply(wx, wy);
+                const auto pos = project(wx, wy);
                 if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                 {
                     continue;
@@ -4781,7 +4907,7 @@ inline bool g_wp_on = false;
                                                 rare, total);
                 return 0;
             }
-            const auto pos = m_calibration->transform.apply(wx, wy);
+            const auto pos = project(wx, wy);
             if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
             {
                 return 0;
@@ -5245,7 +5371,7 @@ inline bool g_wp_on = false;
             const wchar_t* const pal_icon = track_pal_icon();
             for (const auto& [wx, wy] : pts)
             {
-                const auto pos = m_calibration->transform.apply(wx, wy);
+                const auto pos = project(wx, wy);
                 if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                 {
                     continue;
@@ -6353,7 +6479,7 @@ inline bool g_wp_on = false;
                                                   Style::srgb8(layer.b), layer.a / 255.0f};
                 for (size_t i = 0; i < layer.count; ++i)
                 {
-                    const auto pos = m_calibration->transform.apply(layer.points[i].x, layer.points[i].y);
+                    const auto pos = project(layer.points[i].x, layer.points[i].y);
                     if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                     {
                         continue;
@@ -6424,8 +6550,8 @@ inline bool g_wp_on = false;
                         ++layer_hidden;
                     }
                     const auto xy = coord_fn(i);
-                    const auto pos = m_calibration->transform.apply(xy.first, xy.second);
-                    if (pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
+                    const auto pos = project(xy.first, xy.second);
+                    if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                     {
                         continue;
                     }
@@ -10730,6 +10856,23 @@ inline bool g_wp_on = false;
                 return;   // torn down in between: try again next tick
             }
             m_frame_bases = found.bases;   // screen_canvas reads it (build_panel, below)
+            if (found.open && (found.map_kind != m_map_kind || found.map_name != m_map_name))
+            {
+                const MapBounds& b = found.have_bounds ? found.bounds : m_body_bounds[found.map_kind];
+                Output::send<LogLevel::Default>(
+                    STR("[Lodestone] map body: '{}' ({}), screen shows '{}', bounds ({:.0f},{:.0f})-({:.0f},{:.0f}) {}\n"),
+                    found.map_name, found.map_kind ? STR("World Tree") : STR("main"), found.screen_map, b.min_x,
+                    b.min_y, b.max_x, b.max_y, found.have_bounds ? STR("read") : STR("built-in"));
+            }
+            if (found.open)
+            {
+                m_map_kind = found.map_kind;
+                m_map_name = found.map_name;
+                if (found.have_bounds)
+                {
+                    m_body_bounds[found.map_kind] = found.bounds;
+                }
+            }
             UObject* const root = found.root;
             UObject* const map_body_canvas = found.body_canvas;
             UObject* const mask = found.mask;
@@ -10780,6 +10923,7 @@ inline bool g_wp_on = false;
                 // the index here would lose the icons permanently.
                 m_icon_scan = 0;
                 m_recheck_cal = true;   // re-evaluate on the new body, but KEEP the best so far
+                m_tree_checked = false;
                 m_placed = false;
                 m_collapsed = true;
                 // NOT the panel. It is parented to WBP_Map_Base, which OUTLIVES the
@@ -10790,7 +10934,49 @@ inline bool g_wp_on = false;
                 // on its own root's identity.
             }
 
-            if (!m_calibration || m_recheck_cal)
+            if (m_map_kind == 1)
+            {
+                // World Tree body: no boss towers to seed a fit, ~15 statues. Reuse the main
+                // map's fit through project(); refitting here would only replace it.
+                m_recheck_cal = false;
+                if (!m_calibration)
+                {
+                    log_once(L"World Tree map opened before the main map: open the main map once to calibrate");
+                    return;
+                }
+                if (!m_tree_checked)
+                {
+                    // Proof the shared-UV assumption holds: predicted Tree statues vs the
+                    // fast-travel pins this body actually draws. Small px = right.
+                    std::vector<Project::Vec2> pins;
+                    read_pins(mask, L"WBP_Map_IconFTTower_C", pins);
+                    if (!pins.empty())
+                    {
+                        m_tree_checked = true;
+                        std::vector<double> d;
+                        for (const auto& st : Data::kStatues)
+                        {
+                            if (!in_tree(st.x, st.y))
+                            {
+                                continue;
+                            }
+                            const auto q = project(st.x, st.y);
+                            double best = 1e18;
+                            for (const auto& pn : pins)
+                            {
+                                best = std::min(best, std::hypot(pn.x - q.x, pn.y - q.y));
+                            }
+                            d.push_back(best);
+                        }
+                        std::sort(d.begin(), d.end());
+                        Output::send<LogLevel::Default>(
+                            STR("[Lodestone] World Tree map: {} statues vs {} pins, nearest-pin px median {:.1f} "
+                                "max {:.1f} (small = Tree dots line up)\n"),
+                            d.size(), pins.size(), d.empty() ? -1.0 : d[d.size() / 2], d.empty() ? -1.0 : d.back());
+                    }
+                }
+            }
+            else if (!m_calibration || m_recheck_cal)
             {
                 m_recheck_cal = false;
                 std::vector<Project::Vec2> boss_pins, statue_pins;
