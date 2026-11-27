@@ -58,6 +58,11 @@
 #include "cairn_data.hpp"
 #include "cairn_relic_types.hpp"
 #include "cairn_relic_z.hpp"
+
+// The release number. Bump with mod/Info.json and CHANGELOG.md on every build that is
+// handed to anyone: it shows in the map panel title and the load line of UE4SS.log, so a
+// player can tell which build they run.
+#define LODESTONE_VERSION L"0.3.0"
 #include "cairn_project.hpp"
 
 namespace CairnMap
@@ -2749,7 +2754,7 @@ inline bool g_wp_on = false;
             std::vector<PanelItem> v;
             if (!m_menu_open)
             {
-                v.push_back({PanelItem::Title, L"Lodestone", 0});
+                v.push_back({PanelItem::Title, L"Lodestone " LODESTONE_VERSION, 0});
                 v.push_back({PanelItem::Row, L"Configure map", kMenuOpen, nullptr, 0.0f, 0.0f, 0.0f,
                              PanelItem::Button, false});
                 return v;
@@ -2757,7 +2762,7 @@ inline bool g_wp_on = false;
 
             // Open = the tabbed config modal. Title + tab bar, then ONLY the active tab's
             // body; Apply / Cancel go at the very bottom (appended after this switch).
-            v.push_back({PanelItem::Title, L"Configure Lodestone", 0});
+            v.push_back({PanelItem::Title, L"Configure Lodestone " LODESTONE_VERSION, 0});
             {
                 static const wchar_t* const kTabName[3] = {L"Layers", L"Effigies", L"Pals"};
                 for (int t = 0; t < 3; ++t)
@@ -3059,11 +3064,11 @@ inline bool g_wp_on = false;
       public:
         Mod()
         {
-            ModVersion = STR("2.0.0-p1");
+            ModVersion = LODESTONE_VERSION;
             ModName = STR("Lodestone");
             ModAuthors = STR("tehAon");
             ModDescription = STR("Lodestone: resources, collectables and POIs on the Palworld map");
-            Output::send<LogLevel::Default>(STR("[Lodestone] loaded (P1)\n"));
+            Output::send<LogLevel::Default>(STR("[Lodestone] v{} loaded\n"), LODESTONE_VERSION);
         }
 
         auto on_unreal_init() -> void override
