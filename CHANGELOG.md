@@ -4,6 +4,12 @@ Every build handed to anyone gets a version. It shows in the map panel title
 ("Lodestone 0.3.0") and in `UE4SS.log` (`[Lodestone] v0.3.0 loaded`). Bump
 `LODESTONE_VERSION` in `dllmain.cpp`, `mod/Info.json` and this file together.
 
+## 0.3.1 — 2026-11-27
+- Fix: opening the map inside the World Tree drew nothing until the main map had
+  been opened that session (0.3.0). The main-map fit is now saved in
+  `calibration.txt` and loaded at start, so the World Tree map works right away
+  (on a first-ever run, switch to the main map once).
+
 ## 0.3.0 — 2026-11-27 (commit c26b5f5, DLL sha256 d624b0ac…)
 - Track a Pal, live: when a wild one of the tracked species is near, the compass
   points at the real Pal. A marked spawn spot you reach (50 m) with none there is

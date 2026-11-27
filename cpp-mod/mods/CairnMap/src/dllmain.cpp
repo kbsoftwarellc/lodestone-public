@@ -62,7 +62,7 @@
 // The release number. Bump with mod/Info.json and CHANGELOG.md on every build that is
 // handed to anyone: it shows in the map panel title and the load line of UE4SS.log, so a
 // player can tell which build they run.
-#define LODESTONE_VERSION L"0.3.0"
+#define LODESTONE_VERSION L"0.3.1"
 #include "cairn_project.hpp"
 
 namespace CairnMap
@@ -2125,6 +2125,63 @@ inline bool g_wp_on = false;
         //
         // Keyed by layer KEY, not index, so reordering or inserting layers can never
         // silently repoint a saved toggle at the wrong data.
+        // The main map's world->canvas fit, kept between sessions in calibration.txt beside
+        // settings.txt. The World Tree map borrows it (see project), so a session whose first
+        // map open was INSIDE the World Tree had none and drew nothing (Kenny 11-27, 0.3.0:
+        // "the map doesn't load at all"). A loaded fit counts as worse than any real one
+        // (refine 1e9), so the first main-map open still refits and overwrites it.
+        auto calibration_path() const -> std::wstring
+        {
+            std::wstring p = settings_path();
+            const auto slash = p.find_last_of(L"\\/");
+            return slash == std::wstring::npos ? std::wstring{} : p.substr(0, slash + 1) + L"calibration.txt";
+        }
+
+        auto save_calibration() -> void
+        {
+            const auto path = calibration_path();
+            if (path.empty() || !m_calibration)
+            {
+                return;
+            }
+            std::wofstream f(path.c_str(), std::ios::trunc);
+            if (!f)
+            {
+                return;
+            }
+            f.precision(17);
+            const auto& t = m_calibration->transform;
+            f << L"1 " << t.ax << L" " << t.bx << L" " << t.cx << L" " << t.ay << L" " << t.by << L" " << t.cy
+              << L"\n";
+        }
+
+        auto load_calibration() -> void
+        {
+            const auto path = calibration_path();
+            if (path.empty())
+            {
+                return;
+            }
+            std::wifstream f(path.c_str());
+            int ver = 0;
+            Project::Calibration c{};
+            auto& t = c.transform;
+            if (!f || !(f >> ver >> t.ax >> t.bx >> t.cx >> t.ay >> t.by >> t.cy) || ver != 1)
+            {
+                return;   // first run: the first main-map open fits and saves it
+            }
+            for (double v : {t.ax, t.bx, t.cx, t.ay, t.by, t.cy})
+            {
+                if (v != v || std::abs(v) > 1e9)
+                {
+                    return;
+                }
+            }
+            c.refine_residual_px = 1e9;   // any real fit replaces it
+            m_calibration = c;
+            Output::send<LogLevel::Default>(STR("[Lodestone] calibration loaded from last session\n"));
+        }
+
         auto settings_path() const -> std::wstring
         {
             HMODULE self{};
@@ -2588,6 +2645,7 @@ inline bool g_wp_on = false;
             m_cat_open[L"PALS"] = false;
             m_cat_open[L"EFFIGIES"] = false;
             load_settings();
+            load_calibration();
         }
 
         auto is_layer_on(int layer_id) const -> bool
@@ -3021,6 +3079,7 @@ inline bool g_wp_on = false;
         int m_map_kind = 0;            // body we draw on: 0 main, 1 World Tree
         std::wstring m_map_name;       // its MapName, for the change log
         bool m_tree_checked = false;   // Tree pin-vs-prediction check logged for this body
+        bool m_tree_nocal_logged = false;
 
         auto in_tree(double wx, double wy) const -> bool
         {
@@ -11490,7 +11549,13 @@ inline bool g_wp_on = false;
                 m_recheck_cal = false;
                 if (!m_calibration)
                 {
-                    log_once(L"World Tree map opened before the main map: open the main map once to calibrate");
+                    if (!m_tree_nocal_logged)
+                    {
+                        m_tree_nocal_logged = true;
+                        Output::send<LogLevel::Default>(
+                            STR("[Lodestone] World Tree map before any main-map fit (first run): switch to the "
+                                "main map once\n"));
+                    }
                     return;
                 }
                 if (!m_tree_checked)
@@ -11561,6 +11626,7 @@ inline bool g_wp_on = false;
                         (!m_calibration || cand->refine_residual_px < m_calibration->refine_residual_px))
                     {
                         m_calibration = cand;
+                        save_calibration();
                         Output::send<LogLevel::Default>(
                             STR("[Lodestone] calibrated: seed {:.1f}px refine {:.2f}px ({} anchors)\n"),
                             m_calibration->seed_residual_px, m_calibration->refine_residual_px,
