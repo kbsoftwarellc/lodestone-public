@@ -57,6 +57,12 @@
 
 #include "cairn_data.hpp"
 #include "cairn_relic_types.hpp"
+#include "cairn_relic_z.hpp"
+
+// The release number. Bump with mod/Info.json and CHANGELOG.md on every build that is
+// handed to anyone: it shows in the map panel title and the load line of UE4SS.log, so a
+// player can tell which build they run.
+#define LODESTONE_VERSION L"0.3.1"
 #include "cairn_project.hpp"
 
 namespace CairnMap
@@ -86,6 +92,13 @@ namespace CairnMap
     // times (CatchBelow). 5 by request; the Paldeck's own bonus tiers are the usual reason
     // to want a number here.
     inline int g_catch_below = 5;
+
+    // In-world marker (WorldMarker): an icon drawn ON SCREEN over the exact spot of the
+    // tracked Pal (live one, else its nearest unchecked spawn point) and the nearest
+    // effigy, once within WorldMarkerRange metres. Kenny 11-27: "an icon in my game
+    // pointing me exactly to the location".
+    inline bool g_world_marker = true;
+    inline double g_world_marker_range = 300.0;
 
     // How many EV stops brighter the minimap terrain is rendered at night
     // (MinimapTerrainNightBoost). The terrain is a LIT capture, so it is exactly as dark
@@ -235,6 +248,8 @@ inline std::wstring g_track_pal = L"SheepBall";
 inline int g_track_relic = -1;
 static_assert(std::size(Data::kEffigyType) == std::size(Data::kEffigies),
               "kEffigyType must stay parallel to kEffigies -- regenerate cairn_relic_types.hpp");
+static_assert(std::size(Data::kEffigyZ) == std::size(Data::kEffigies),
+              "kEffigyZ must stay parallel to kEffigies -- regenerate cairn_relic_z.hpp");
 // Placement: same two-letter anchor grid as the minimap, default TC (top-centre,
 // under vanilla's own compass bar). Margins push in from an edge.
 inline double g_compass_ax = 0.5;   // horizontal: 0 left, 0.5 centre, 1 right
@@ -734,6 +749,34 @@ inline bool g_wp_on = false;
             return icon && std::wstring_view(icon).starts_with(L"T_icon_");
         }
 
+        // Vanilla compass art that carries its OWN colours and a dark outline, so it reads on
+        // any terrain untinted. Decoded from the pak (DXT5 top mip, 2026-11-26): these are
+        // framed / outlined; dungeon, boss, Search_Treasure, Search_Junk, camp and pal_rare
+        // are flat WHITE silhouettes with no outline and must take the layer colour, or they
+        // draw as plain white blobs (Kenny: "some of the icons are just white").
+        inline auto icon_is_framed(const wchar_t* icon) -> bool
+        {
+            if (!icon)
+            {
+                return false;
+            }
+            static constexpr const wchar_t* kFramed[] = {
+                L"T_icon_compass_tower",       L"T_icon_compass_FTtower",     L"T_icon_compass_FTUnlockMap",
+                L"T_icon_compass_BossGate",    L"T_icon_compass_KeyBoss",     L"T_icon_compass_EnemyCamp",
+                L"T_icon_compass_TreasureMap_01", L"T_icon_Compass_Quest_0",  L"T_icon_compass_camp",
+                L"T_icon_compass_Teleport",    L"T_icon_compass_Bounty",
+            };
+            const std::wstring_view n{icon};
+            for (const auto* f : kFramed)
+            {
+                if (n == f)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         // Colours in cairn_data.hpp are authored as 8-bit sRGB (what you'd type in
         // a paint program). UMG's SetColorAndOpacity treats its FLinearColor as
         // *linear* and re-applies the sRGB gamma curve on display, so a byte handed
@@ -741,6 +784,13 @@ inline bool g_wp_on = false;
         // out (254,135,135). Undo the curve once here so the round trip lands on the
         // authored colour. 255 maps to 1.0, so untinted white item art is unchanged.
         // Alpha is linear; do NOT pass it through this.
+        // Same correction for a colour authored as 0..1 sRGB floats (the live-layer constants).
+        inline auto srgbf(const Engine::FLinearColor_& c) -> Engine::FLinearColor_
+        {
+            auto f = [](float s) { return s <= 0.04045f ? s / 12.92f : std::pow((s + 0.055f) / 1.055f, 2.4f); };
+            return {f(c.R), f(c.G), f(c.B), c.A};
+        }
+
         inline auto srgb8(uint8_t c) -> float
         {
             const float s = c / 255.0f;
@@ -762,9 +812,17 @@ inline bool g_wp_on = false;
             // prefix but lives in UI/InGame, not UI/IngameMenu. Ordered the other way
             // round these resolve to a package that does not exist and the load fails
             // silently -- a dot with no icon, which looks like every other icon bug.
-            if (n.starts_with(L"T_icon_compass_") || n.starts_with(L"T_icon_map_"))
+            // T_icon_Compass_Quest_* is spelled with a capital C in the pak; T_icon_pal_rare
+            // is the one T_icon_pal_* glyph we use and it lives in InGame, not IngameMenu.
+            if (n.starts_with(L"T_icon_compass_") || n.starts_with(L"T_icon_Compass_") ||
+                n.starts_with(L"T_icon_map_") || n == L"T_icon_pal_rare")
             {
                 return L"/Game/Pal/Texture/UI/InGame/";
+            }
+            // A Pal's own face, T_<CharacterID>_icon_normal (the tracked-Pal dots).
+            if (n.starts_with(L"T_") && n.ends_with(L"_icon_normal"))
+            {
+                return L"/Game/Pal/Texture/PalIcon/Normal/";
             }
             if (n.starts_with(L"T_icon_"))
             {
@@ -1493,12 +1551,25 @@ inline bool g_wp_on = false;
         // the player -- census: 18 loaded; PalDungeonPointMarker=0 and the subsystem TMap=0.
         static constexpr int kDungeonLayer = 1007;
         static constexpr const wchar_t* kDungeonIcon = L"T_icon_compass_dungeon";
+        // Boss dungeons: the FIXED instances (APalDungeonFixedEntrance, BP_DungeonFixedEntrance_*
+        // -- 18 placed in MainWorld_5, all always loaded). FindAllOf(PalDungeonEntrance) matches
+        // subclasses, so they used to fill the Dungeon layer (every open read "18 of 18") and
+        // crowd out the random caves (BP_DungeonEntrance_*), which only replicate when near.
+        // Same scan, split by class (is_fixed_entrance). Key-boss art: in UI/InGame, checked
+        // against the pak index (a missing name would disable every icon).
+        static constexpr int kBossDungeonLayer = 1012;
+        static constexpr const wchar_t* kBossDungeonIcon = L"T_icon_compass_KeyBoss";
         // Lucky (rare "shiny") wild Pals (Build B): live scan of PalCharacter actors filtered
         // by IsRarePal, nearest-only. No static positions -- they wander + spawn/despawn.
         static constexpr int kLuckyLayer = 1008;
+        // Sparkle glyph (vanilla's rare-Pal mark), tinted gold. Was icon-less: a plain gold
+        // circle nobody could place (Kenny 2026-11-26).
+        static constexpr const wchar_t* kLuckyIcon = L"T_icon_pal_rare";
         // User waypoint (F3): a single sticky "go here" target injected onto the compass. No
         // static data and no map dot in v1 -- it lives only on the compass strip.
         static constexpr int kWaypointLayer = 1009;
+        // Map-pin glyph, tinted magenta; was a plain magenta circle on the compass.
+        static constexpr const wchar_t* kWaypointIcon = L"T_icon_compass_00";
         // Schematic puzzle towers: ABP_LevelObject_ItemPickupTower_C -- the ancient-shrine
         // pedestals whose panel puzzle rewards a Blueprint_* item (the "Schematic" the UI
         // names). World-partition streamed like dungeons, so FindAllOf returns the nearby
@@ -1520,7 +1591,8 @@ inline bool g_wp_on = false;
             {kEffigyLayer, L"Effigies"},      {kNoteLayer, L"Notes"},   {kEggLayer, L"Eggs"},
             {kFastTravelLayer, L"FastTravel"}, {kTowerLayer, L"Tower"}, {kSealedLayer, L"SealedRealm"},
             {kPalSpeciesLayer, L"Pal"}, {kDungeonLayer, L"Dungeon"}, {kLuckyLayer, L"Lucky"},
-            {kWaypointLayer, L"Waypoint"}, {kSchematicLayer, L"Schematic"}, {kCatchLayer, L"Catch"}};
+            {kWaypointLayer, L"Waypoint"}, {kSchematicLayer, L"Schematic"}, {kCatchLayer, L"Catch"},
+            {kBossDungeonLayer, L"BossDungeon"}};
         // Dynamic panel label for the Pal layer ("Pal: <name>"); a member so its
         // c_str() outlives the panel build. Rebuilt in panel_items from g_track_pal.
         std::wstring m_pal_label = L"Pal";
@@ -1606,6 +1678,7 @@ inline bool g_wp_on = false;
         // pool. Streaming already limits FindAllOf(PalDungeonEntrance) to nearby, this bounds it.
         static constexpr Engine::FLinearColor_ kDungeonColor{0.35f, 0.85f, 0.75f, 1.0f};
         static constexpr size_t kDungeonMaxDots = 20;
+        static constexpr Engine::FLinearColor_ kBossDungeonColor{1.0f, 0.42f, 0.22f, 1.0f};   // boss orange
         // Lucky Pals: gold to match the golden-sparkle VFX; nearest-only ("only need to track
         // nearest", Kenny). kLuckyRangeUU = when the sound/alert fires (300 m); + hysteresis so
         // it fires once per approach, not every tick at the boundary.
@@ -1632,6 +1705,11 @@ inline bool g_wp_on = false;
             // it. It cannot be looked up from layer_id: effigies/notes/eggs use ids
             // 1000..1002, which are not kLayers indices.
             Engine::FLinearColor_ color{};
+            // A note's amber "map pin" disc, drawn UNDER its icon at the same spot (see
+            // place_collectables). Not a marker of its own: compute_nearest and the minimap
+            // skip it. It used to win the nearest tie (emitted first, same distance), so the
+            // compass showed a plain amber circle for the nearest note (Kenny 2026-11-26).
+            bool backing = false;
         };
         std::vector<Dot> m_dots;                           // pooled dot widgets
         std::unordered_map<int, bool> m_layer_on;          // toggle state per layer id
@@ -1671,6 +1749,7 @@ inline bool g_wp_on = false;
         // rebuilt HUD (respawn, reload) rebuilds the minimap instead of orphaning
         // it. Frame-only for now: the transform and dots come after the go/no-go.
         static constexpr double kMinimapDotPx = 14.0;   // big enough for a recognisable icon
+        static constexpr double kMinimapBackPx = 18.0;  // dark disc behind an icon dot
         static constexpr size_t kMinimapMaxDots = 260;
         UObject* m_minimap_canvas = nullptr;
         int32_t m_minimap_canvas_idx = -1;   // object-array slot captured at build, for slot_live()
@@ -1704,6 +1783,11 @@ inline bool g_wp_on = false;
         std::vector<UObject*> m_minimap_dot_slots;   // their canvas slots (for repositioning)
         std::vector<const wchar_t*> m_minimap_dot_icon;   // icon each pooled dot currently shows
         std::vector<Engine::FLinearColor_> m_minimap_dot_col;   // ...and the tint it was given
+        // A dark disc behind every ICON dot (same index as m_minimap_dots, added to the canvas
+        // just before it so it draws underneath): icons sat straight on the terrain capture
+        // and washed out on bright ground (Kenny: "icons don't show well on the minimap").
+        std::vector<UObject*> m_minimap_backs;
+        std::vector<UObject*> m_minimap_back_slots;
         // m_minimap_dot_icon value for a dot that has never been styled (see tick_minimap).
         static constexpr const wchar_t* kUnstyledIcon = L"<unstyled>";
         static auto same_color(const Engine::FLinearColor_& a, const Engine::FLinearColor_& b) -> bool
@@ -1889,6 +1973,8 @@ inline bool g_wp_on = false;
             double wx{}, wy{};
             const wchar_t* icon{nullptr};
             Engine::FLinearColor_ color{};
+            double wz{};          // world height, when known (in-world marker)
+            bool has_z{false};
         };
         std::unordered_map<int, Nearest> m_nearest;
         // Live nearest-of-each for the actor-based compass layers (eggs/dungeons/lucky),
@@ -1899,8 +1985,66 @@ inline bool g_wp_on = false;
         {
             double wx = 0.0, wy = 0.0, dist = 0.0;
             bool valid = false;
+            double wz = 0.0;
+            bool has_z = false;
         };
-        std::unordered_map<int, LiveNearest> m_live_nearest;   // layer id -> nearest actor
+        std::unordered_map<int, LiveNearest> m_live_nearest;
+        // ---- Track-one-Pal, live (Kenny 11-27: "I see all the markers but never see
+        // mimogs") -- a marked spawn area rolls Mimog only ~3% of the time. So: point at a
+        // real one when the character scan sees it, and once you reach a marked point with
+        // none there, hide it for kTrackForget (the area re-rolls later) so the next one
+        // takes over. Game thread (or the fallback driver under the state lock) only.
+        struct TrackPt
+        {
+            double x, y, z;
+        };
+        std::vector<TrackPt> m_track_pts;   // every kept spawn point (place_tracked_pal)
+        std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> m_track_cleared;
+        bool m_track_seen = false;          // a live one is the current target
+        static constexpr double kTrackReachUU = 5000.0;      // 50 m: "you got there"
+        static constexpr double kTrackOccupiedUU = 15000.0;  // a live one this close keeps the point
+        static constexpr auto kTrackForget = std::chrono::minutes(10);
+        static auto track_key(double x, double y) -> uint64_t
+        {
+            return (static_cast<uint64_t>(static_cast<uint32_t>(static_cast<int32_t>(std::lround(x)))) << 32) |
+                   static_cast<uint32_t>(static_cast<int32_t>(std::lround(y)));
+        }
+        auto track_cleared(double x, double y, std::chrono::steady_clock::time_point now) -> bool
+        {
+            auto it = m_track_cleared.find(track_key(x, y));
+            if (it == m_track_cleared.end())
+            {
+                return false;
+            }
+            if (now - it->second > kTrackForget)
+            {
+                m_track_cleared.erase(it);
+                return false;
+            }
+            return true;
+        }
+        // Effigy height by position (kEffigyZ parallels kEffigies; INT32_MIN = unknown).
+        std::unordered_map<uint64_t, int32_t> m_effigy_z;
+        auto effigy_z(double x, double y, double& out) -> bool
+        {
+            if (m_effigy_z.empty())
+            {
+                for (size_t i = 0; i < std::size(Data::kEffigies); ++i)
+                {
+                    if (Data::kEffigyZ[i] != INT32_MIN)
+                    {
+                        m_effigy_z[track_key(Data::kEffigies[i].x, Data::kEffigies[i].y)] = Data::kEffigyZ[i];
+                    }
+                }
+            }
+            auto it = m_effigy_z.find(track_key(x, y));
+            if (it == m_effigy_z.end())
+            {
+                return false;
+            }
+            out = it->second;
+            return true;
+        }   // layer id -> nearest actor
         std::chrono::steady_clock::time_point m_next_live_scan{};
         // Live-actor candidates for refresh_live_nearest. The object-array walk that finds
         // them (scan_live_candidates) runs on UE4SS's update thread; the game thread only
@@ -1981,6 +2125,63 @@ inline bool g_wp_on = false;
         //
         // Keyed by layer KEY, not index, so reordering or inserting layers can never
         // silently repoint a saved toggle at the wrong data.
+        // The main map's world->canvas fit, kept between sessions in calibration.txt beside
+        // settings.txt. The World Tree map borrows it (see project), so a session whose first
+        // map open was INSIDE the World Tree had none and drew nothing (Kenny 11-27, 0.3.0:
+        // "the map doesn't load at all"). A loaded fit counts as worse than any real one
+        // (refine 1e9), so the first main-map open still refits and overwrites it.
+        auto calibration_path() const -> std::wstring
+        {
+            std::wstring p = settings_path();
+            const auto slash = p.find_last_of(L"\\/");
+            return slash == std::wstring::npos ? std::wstring{} : p.substr(0, slash + 1) + L"calibration.txt";
+        }
+
+        auto save_calibration() -> void
+        {
+            const auto path = calibration_path();
+            if (path.empty() || !m_calibration)
+            {
+                return;
+            }
+            std::wofstream f(path.c_str(), std::ios::trunc);
+            if (!f)
+            {
+                return;
+            }
+            f.precision(17);
+            const auto& t = m_calibration->transform;
+            f << L"1 " << t.ax << L" " << t.bx << L" " << t.cx << L" " << t.ay << L" " << t.by << L" " << t.cy
+              << L"\n";
+        }
+
+        auto load_calibration() -> void
+        {
+            const auto path = calibration_path();
+            if (path.empty())
+            {
+                return;
+            }
+            std::wifstream f(path.c_str());
+            int ver = 0;
+            Project::Calibration c{};
+            auto& t = c.transform;
+            if (!f || !(f >> ver >> t.ax >> t.bx >> t.cx >> t.ay >> t.by >> t.cy) || ver != 1)
+            {
+                return;   // first run: the first main-map open fits and saves it
+            }
+            for (double v : {t.ax, t.bx, t.cx, t.ay, t.by, t.cy})
+            {
+                if (v != v || std::abs(v) > 1e9)
+                {
+                    return;
+                }
+            }
+            c.refine_residual_px = 1e9;   // any real fit replaces it
+            m_calibration = c;
+            Output::send<LogLevel::Default>(STR("[Lodestone] calibration loaded from last session\n"));
+        }
+
         auto settings_path() const -> std::wstring
         {
             HMODULE self{};
@@ -2101,6 +2302,12 @@ inline bool g_wp_on = false;
             double catch_below = g_catch_below;
             num(L"CatchBelow", catch_below, 1.0, 99.0);
             g_catch_below = static_cast<int>(catch_below);
+            {
+                double wm = g_world_marker ? 1.0 : 0.0;
+                num(L"WorldMarker", wm, 0.0, 1.0);
+                g_world_marker = wm >= 0.5;
+                num(L"WorldMarkerRange", g_world_marker_range, 10.0, 5000.0);
+            }
             num(L"CompassX", g_compass_ox, 0.0, 4000.0);
             num(L"CompassY", g_compass_oy, 0.0, 4000.0);
             num(L"MenuButtonSize", g_menu_btn_size, 24.0, 96.0);
@@ -2392,6 +2599,11 @@ inline bool g_wp_on = false;
             f << L"# Restart to apply.\n";
             f << L"CatchBelow=" << g_catch_below << L"\n";
             f << L"#\n";
+            f << L"# In-world marker: an icon on screen right over the tracked Pal (or its nearest\n";
+            f << L"# unchecked spawn point) and the nearest effigy, within WorldMarkerRange metres.\n";
+            f << L"WorldMarker=" << (g_world_marker ? 1 : 0) << L"\n";
+            f << L"WorldMarkerRange=" << g_world_marker_range << L"\n";
+            f << L"#\n";
             f << L"# Waypoint (F3): a sticky 'go here' target on the compass. On=1 when set;\n";
             f << L"# X/Y are its world coordinates. F3 sets it to the nearest marker, or clears it.\n";
             f << L"WaypointOn=" << (g_wp_on ? 1 : 0) << L"\n";
@@ -2433,6 +2645,7 @@ inline bool g_wp_on = false;
             m_cat_open[L"PALS"] = false;
             m_cat_open[L"EFFIGIES"] = false;
             load_settings();
+            load_calibration();
         }
 
         auto is_layer_on(int layer_id) const -> bool
@@ -2599,7 +2812,7 @@ inline bool g_wp_on = false;
             std::vector<PanelItem> v;
             if (!m_menu_open)
             {
-                v.push_back({PanelItem::Title, L"Lodestone", 0});
+                v.push_back({PanelItem::Title, L"Lodestone " LODESTONE_VERSION, 0});
                 v.push_back({PanelItem::Row, L"Configure map", kMenuOpen, nullptr, 0.0f, 0.0f, 0.0f,
                              PanelItem::Button, false});
                 return v;
@@ -2607,7 +2820,7 @@ inline bool g_wp_on = false;
 
             // Open = the tabbed config modal. Title + tab bar, then ONLY the active tab's
             // body; Apply / Cancel go at the very bottom (appended after this switch).
-            v.push_back({PanelItem::Title, L"Configure Lodestone", 0});
+            v.push_back({PanelItem::Title, L"Configure Lodestone " LODESTONE_VERSION, 0});
             {
                 static const wchar_t* const kTabName[3] = {L"Layers", L"Effigies", L"Pals"};
                 for (int t = 0; t < 3; ++t)
@@ -2636,7 +2849,8 @@ inline bool g_wp_on = false;
                 }
 
                 v.push_back({PanelItem::Header, L"POINTS OF INTEREST", 0});
-                for (int idx : {12, 14, 13, 17})   // Chest, Outpost, Junk, Boss
+                for (int idx : {12, 14, 13, 17, 25, 26, 27, 28})   // Chest, Outpost, Junk, Boss, CaveSite,
+                                                                   // TreasureMap, MapTower, Npc
                 {
                     v.push_back(layer_row(idx));
                 }
@@ -2647,8 +2861,9 @@ inline bool g_wp_on = false;
                 v.push_back({PanelItem::Row, L"Syndicate Towers", kTowerLayer, kTowerIcon, 1.0f, 0.45f, 0.85f});
                 v.push_back({PanelItem::Row, L"Sealed Realms", kSealedLayer, kSealedIcon, 0.70f, 0.55f, 1.0f});
                 v.push_back({PanelItem::Row, L"Dungeons", kDungeonLayer, kDungeonIcon, 0.35f, 0.85f, 0.75f});
+                v.push_back({PanelItem::Row, L"Boss Dungeons", kBossDungeonLayer, kBossDungeonIcon, 1.0f, 0.42f, 0.22f});
                 v.push_back({PanelItem::Row, L"Schematics", kSchematicLayer, kSchematicIcon, 0.35f, 0.80f, 1.0f});
-                v.push_back({PanelItem::Row, L"Lucky Pals", kLuckyLayer, nullptr, 1.0f, 0.84f, 0.20f});
+                v.push_back({PanelItem::Row, L"Lucky Pals", kLuckyLayer, kLuckyIcon, 1.0f, 0.84f, 0.20f});
                 m_catch_label = L"Pals: under " + std::to_wstring(g_catch_below) + L" caught";
                 v.push_back({PanelItem::Row, m_catch_label.c_str(), kCatchLayer, kCatchIcon, 0.45f, 0.85f, 1.0f});
             }
@@ -2844,6 +3059,54 @@ inline bool g_wp_on = false;
         int m_ft_total = -1;
         double m_applied_zoom = 1.0;
         std::optional<Project::Calibration> m_calibration;
+        // World Tree (11-27, Kenny's friend): the map screen has TWO bodies -- MainMap and
+        // Tree -- each showing its own box of MainWorld_5 (DT_WorldMapUIData
+        // landScapeRealPositionMin/Max, pak-decoded below; the live body's
+        // Min/MaxLandScapePosition override them when readable). One transform for
+        // everything drew the 47 Tree effigies (and Tree ore/chests/bosses) off the
+        // main map's top-left edge, and nothing on the Tree map. Now each point goes
+        // only to the body whose box holds it (vanilla: GetMapNameByWorldLocation), and
+        // the Tree body reuses the main pin fit: both bodies are the same widget at the
+        // same texture size, so a point's UV in its own box lands where the same UV
+        // would on the main map.
+        struct MapBounds
+        {
+            double min_x, min_y, max_x, max_y;
+        };
+        static constexpr MapBounds kMainBounds{-1099400.0, -724400.0, 349400.0, 724400.0};
+        static constexpr MapBounds kTreeBounds{347351.5, -818197.0, 689148.5, -476400.0};
+        MapBounds m_body_bounds[2] = {kMainBounds, kTreeBounds};
+        int m_map_kind = 0;            // body we draw on: 0 main, 1 World Tree
+        std::wstring m_map_name;       // its MapName, for the change log
+        bool m_tree_checked = false;   // Tree pin-vs-prediction check logged for this body
+        bool m_tree_nocal_logged = false;
+
+        auto in_tree(double wx, double wy) const -> bool
+        {
+            const auto& t = m_body_bounds[1];
+            return wx >= t.min_x && wx <= t.max_x && wy >= t.min_y && wy <= t.max_y;
+        }
+
+        // World -> canvas on the body being drawn; NaN when the point belongs to the
+        // other map (every caller already drops NaN). Needs m_calibration.
+        auto project(double wx, double wy) const -> Project::Vec2
+        {
+            const int kind = in_tree(wx, wy) ? 1 : 0;
+            if (kind != m_map_kind)
+            {
+                const double nan = std::nan("");
+                return {nan, nan};
+            }
+            if (kind == 0)
+            {
+                return m_calibration->transform.apply(wx, wy);
+            }
+            const auto& m = m_body_bounds[0];
+            const auto& t = m_body_bounds[1];
+            const double qx = m.min_x + (wx - t.min_x) * (m.max_x - m.min_x) / (t.max_x - t.min_x);
+            const double qy = m.min_y + (wy - t.min_y) * (m.max_y - m.min_y) / (t.max_y - t.min_y);
+            return m_calibration->transform.apply(qx, qy);
+        }
         // The world->canvas transform is a fixed map property, but the runtime pin set is
         // unstable on a server (boss/FT pins drop out some opens). So we KEEP the best
         // calibration across map-body swaps; this flags a re-evaluation on a new body.
@@ -2860,11 +3123,11 @@ inline bool g_wp_on = false;
       public:
         Mod()
         {
-            ModVersion = STR("2.0.0-p1");
+            ModVersion = LODESTONE_VERSION;
             ModName = STR("Lodestone");
             ModAuthors = STR("tehAon");
             ModDescription = STR("Lodestone: resources, collectables and POIs on the Palworld map");
-            Output::send<LogLevel::Default>(STR("[Lodestone] loaded (P1)\n"));
+            Output::send<LogLevel::Default>(STR("[Lodestone] v{} loaded\n"), LODESTONE_VERSION);
         }
 
         auto on_unreal_init() -> void override
@@ -3009,6 +3272,11 @@ inline bool g_wp_on = false;
             int32_t body_idx = -1;
             int32_t mask_idx = -1;
             bool open = false;
+            int map_kind = 0;          // 0 main, 1 World Tree (see project)
+            std::wstring map_name;     // body MapName ("" if unreadable)
+            std::wstring screen_map;   // base CurrentDisplayMapName ("" if unreadable)
+            MapBounds bounds{};        // body Min/MaxLandScapePosition
+            bool have_bounds = false;
             // Every WBP_Map_Base_C instance (live when listed), for screen_canvas: gathered
             // on the update thread so the game thread's panel code never walks.
             std::vector<LiveCand> bases;
@@ -3199,7 +3467,7 @@ inline bool g_wp_on = false;
         auto find_map_timed(MapFind& f) -> void
         {
             PerfMax<std::atomic<long long>> perf{m_perf_find_map_max_us};
-            f.open = find_map(f.root, f.body_canvas, f.mask);
+            f.open = find_map(f.root, f.body_canvas, f.mask, &f);
             if (f.open)
             {
                 f.root_idx = f.root->GetInternalIndex();
@@ -3220,13 +3488,70 @@ inline bool g_wp_on = false;
 
         // Find the visible map body's root (screen-fixed canvas) + Canvas_MapBody
         // (pans/zooms) + Canvas_ForIcon_Mask.
-        auto find_map(UObject*& out_root, UObject*& out_map_body_canvas, UObject*& out_mask_canvas) -> bool
+        static auto read_body_bounds(UObject* body, MapBounds& out) -> bool
         {
+            // FVector2D is two doubles on UE5 (LWC): Min @0x520, Max @0x530.
+            auto* mn = body->GetValuePtrByPropertyNameInChain<double>(STR("MinLandScapePosition"));
+            auto* mx = body->GetValuePtrByPropertyNameInChain<double>(STR("MaxLandScapePosition"));
+            if (!mn || !mx)
+            {
+                return false;
+            }
+            const MapBounds b{mn[0], mn[1], mx[0], mx[1]};
+            for (double v : {b.min_x, b.min_y, b.max_x, b.max_y})
+            {
+                if (v != v || std::abs(v) > 4e6)
+                {
+                    return false;
+                }
+            }
+            if (b.max_x - b.min_x < 1e4 || b.max_y - b.min_y < 1e4)
+            {
+                return false;   // not filled yet (zeros before InitializeMapBody)
+            }
+            out = b;
+            return true;
+        }
+
+        auto find_map(UObject*& out_root, UObject*& out_map_body_canvas, UObject*& out_mask_canvas,
+                      MapFind* info = nullptr) -> bool
+        {
+            // Which map the screen shows (MainMap / Tree): WBP_Map_Base_C keeps one body per
+            // map in a WidgetSwitcher, and a switcher leaves its children's own Visibility
+            // alone -- so IsVisible is true for both and "most fast-travel pins" always
+            // picked the main body, even with the Tree map up.
+            std::wstring want;
+            {
+                std::vector<UObject*> bases;
+                known_objects(1, bases);
+                for (auto* b : bases)
+                {
+                    Engine::ParamsIsVisible bv{};
+                    if (!b || !Engine::call(b, L"IsVisible", bv) || !bv.ReturnValue)
+                    {
+                        continue;
+                    }
+                    if (auto* n = b->GetValuePtrByPropertyNameInChain<FName>(STR("CurrentDisplayMapName")))
+                    {
+                        want = n->ToString();
+                        if (want == L"None")
+                        {
+                            want.clear();
+                        }
+                        if (!want.empty())
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
             std::vector<UObject*> bodies;
             known_objects(0, bodies);
             UObject* best_root = nullptr;
             UObject* best_mask = nullptr;
             UObject* best_body_canvas = nullptr;
+            UObject* best_body = nullptr;
+            std::wstring best_name;
             int best_pins = 0;
             for (auto* body : bodies)
             {
@@ -3265,13 +3590,30 @@ inline bool g_wp_on = false;
                         ++pins;
                     }
                 }
-                if (pins + 1 > best_pins)
+                std::wstring name;
+                if (auto* mn = body->GetValuePtrByPropertyNameInChain<FName>(STR("MapName")))
                 {
-                    best_pins = pins + 1;
+                    name = mn->ToString();
+                }
+                // The body the screen shows wins outright; pins only break ties (pooled
+                // bodies) or decide when the map name can't be read.
+                const int score = pins + 1 + ((!want.empty() && name == want) ? 1000000 : 0);
+                if (score > best_pins)
+                {
+                    best_pins = score;
                     best_mask = mask;
                     best_body_canvas = body_canvas;
                     best_root = *root;
+                    best_body = body;
+                    best_name = std::move(name);
                 }
+            }
+            if (info && best_body)
+            {
+                info->map_name = best_name;
+                info->screen_map = want;
+                info->map_kind = best_name.find(L"Tree") != std::wstring::npos ? 1 : 0;
+                info->have_bounds = read_body_bounds(best_body, info->bounds);
             }
             out_root = best_root;
             out_map_body_canvas = best_body_canvas;
@@ -3444,6 +3786,7 @@ inline bool g_wp_on = false;
             entry.color = color;
             entry.base_size = base_size;
             entry.layer_id = layer_id;
+            entry.backing = false;   // pooled slot: place_collectables re-marks its backings
             entry.base_hidden = !visible;
             entry.wx = world.x;
             entry.wy = world.y;
@@ -3644,7 +3987,7 @@ inline bool g_wp_on = false;
                 {
                     continue;
                 }
-                const auto pos = m_calibration->transform.apply(ex, ey);
+                const auto pos = project(ex, ey);
                 if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                 {
                     continue;
@@ -3749,7 +4092,7 @@ inline bool g_wp_on = false;
                     {
                         continue;
                     }
-                    const auto pos = m_calibration->transform.apply(g.ReturnValue.X, g.ReturnValue.Y);
+                    const auto pos = project(g.ReturnValue.X, g.ReturnValue.Y);
                     if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                     {
                         continue;
@@ -3979,6 +4322,9 @@ inline bool g_wp_on = false;
             resolve_one(kTowerIcon);
             resolve_one(kSealedIcon);
             resolve_one(kDungeonIcon);
+            resolve_one(kBossDungeonIcon);
+            resolve_one(kLuckyIcon);
+            resolve_one(kWaypointIcon);
             resolve_one(kSchematicIcon);
             resolve_one(kCatchIcon);
             resolve_one(L"T_icon_map_player");   // minimap heading arrow
@@ -4002,6 +4348,34 @@ inline bool g_wp_on = false;
                 return true;   // give up; dots are a fine fallback
             }
             return false;   // registry may not be populated yet -- try again next frame
+        }
+
+        // The tracked Pal's face, T_<id>_icon_normal. Dot::icon keeps a raw pointer, so the
+        // names live in a node-based set (stable addresses across TrackPal changes). Loaded
+        // OUTSIDE tick_load_icons: a species without a face must not disable every icon.
+        std::set<std::wstring> m_dyn_icon_names;
+        std::unordered_map<std::wstring, int> m_dyn_icon_tries;
+        auto track_pal_icon() -> const wchar_t*
+        {
+            if (g_track_pal.empty())
+            {
+                return nullptr;
+            }
+            const auto& name = *m_dyn_icon_names.insert(L"T_" + g_track_pal + L"_icon_normal").first;
+            if (!m_tex_index.count(name) && IsInGameThread() && m_dyn_icon_tries[name] < 3)
+            {
+                ++m_dyn_icon_tries[name];
+                if (auto* tex = load_texture_asset(name.c_str()))
+                {
+                    m_tex_index[name] = tex;
+                }
+                else if (m_dyn_icon_tries[name] == 3)
+                {
+                    Output::send<LogLevel::Default>(STR("[Lodestone] no face icon {} -- tracked Pal stays a dot\n"),
+                                                    name);
+                }
+            }
+            return m_tex_index.count(name) ? name.c_str() : nullptr;
         }
 
         auto layer_texture(const wchar_t* icon) -> UObject*
@@ -4166,22 +4540,46 @@ inline bool g_wp_on = false;
         // Cap to the nearest kDungeonMaxDots so a dense pocket can't flood the pool. Mirrors
         // place_live_pois' FindAllOf front-end + place_tracked_pal's nth_element cap. The
         // compass + nearest readout pick these up for free via compute_nearest (kDungeonLayer).
+        // True for a fixed boss-instance entrance (APalDungeonFixedEntrance or a subclass),
+        // false for a random cave. A class-chain FName compare: no reflection call, no
+        // allocation, safe from either thread (the FName is built once, thread-safe static).
+        static auto is_fixed_entrance(UObject* o) -> bool
+        {
+            static const FName kFixed(STR("PalDungeonFixedEntrance"), FNAME_Add);
+            UStruct* s = o ? o->GetClassPrivate() : nullptr;
+            for (int depth = 0; s && depth < 16; ++depth, s = s->GetSuperStruct())
+            {
+                if (s->GetNamePrivate() == kFixed)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         auto place_nearest_dungeons(UClass* image_class) -> size_t
         {
             if (!m_calibration)
             {
                 return 0;
             }
-            if (!is_layer_on(kDungeonLayer))
+            const bool caves_on = is_layer_on(kDungeonLayer);
+            const bool boss_on = is_layer_on(kBossDungeonLayer);
+            if (!caves_on && !boss_on)
             {
                 return 0;   // see live_objects: an off layer is not scanned
             }
             std::vector<UObject*> objs;
             live_objects(kLiveDungeon, L"PalDungeonEntrance", objs);
-            std::vector<std::pair<double, double>> pts;
+            std::vector<std::pair<double, double>> pts, boss_pts;
             for (auto* o : objs)
             {
                 if (!o)
+                {
+                    continue;
+                }
+                const bool fixed = is_fixed_entrance(o);
+                if (fixed ? !boss_on : !caves_on)
                 {
                     continue;
                 }
@@ -4190,7 +4588,22 @@ inline bool g_wp_on = false;
                 {
                     continue;
                 }
-                pts.push_back({wx, wy});
+                (fixed ? boss_pts : pts).push_back({wx, wy});
+            }
+            // Boss dungeons: every one, no cap (18 in the world, all loaded).
+            size_t boss_shown = 0;
+            for (const auto& [wx, wy] : boss_pts)
+            {
+                const auto pos = project(wx, wy);
+                if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
+                {
+                    continue;
+                }
+                if (emit_dot(image_class, pos, {wx, wy}, kBossDungeonColor, kBossDungeonIcon, kPoiDotPx, true,
+                             kBossDungeonLayer) != SIZE_MAX)
+                {
+                    ++boss_shown;
+                }
             }
             const size_t total = pts.size();
             double px = 0, py = 0, pz = 0;
@@ -4209,7 +4622,7 @@ inline bool g_wp_on = false;
             size_t shown = 0;
             for (const auto& [wx, wy] : pts)
             {
-                const auto pos = m_calibration->transform.apply(wx, wy);
+                const auto pos = project(wx, wy);
                 if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                 {
                     continue;
@@ -4220,8 +4633,10 @@ inline bool g_wp_on = false;
                     ++shown;
                 }
             }
-            Output::send<LogLevel::Default>(STR("[Lodestone] dungeons: {} of {} nearby placed\n"), shown, total);
-            return shown;
+            Output::send<LogLevel::Default>(
+                STR("[Lodestone] dungeons: {} of {} nearby caves placed; boss dungeons: {} of {}\n"), shown, total,
+                boss_shown, boss_pts.size());
+            return shown + boss_shown;
         }
 
         // Solved-schematic set, refreshed off the player record. Cheap but not free (a
@@ -4315,7 +4730,7 @@ inline bool g_wp_on = false;
             size_t shown = 0;
             for (const auto& [wx, wy] : pts)
             {
-                const auto pos = m_calibration->transform.apply(wx, wy);
+                const auto pos = project(wx, wy);
                 if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                 {
                     continue;
@@ -4511,6 +4926,72 @@ inline bool g_wp_on = false;
         // fewer than CatchBelow times. Same actor list as the lucky scan. Skipped: anything
         // with an owner (party, base workers, other players' Pals), non-Pals (humans, the
         // players themselves), and Pals the game marks uncapturable or dead.
+        // The nearest WILD, living Pal of the tracked species in the scanned character list
+        // (same reads as nearest_uncaught_among below).
+        auto nearest_tracked_among(const std::vector<UObject*>& chars, double px, double py, double& out_wx,
+                                   double& out_wy, double& out_wz, double& out_dist) -> bool
+        {
+            const SaveParamOffsets& off = save_param_offsets();
+            if (off.character_id < 0 || g_track_pal.empty())
+            {
+                return false;
+            }
+            const std::wstring want = Collected::species_key(g_track_pal);
+            bool have = false;
+            double best = 0.0;
+            for (auto* c : chars)
+            {
+                if (!c || c == m_local_pawn)
+                {
+                    continue;
+                }
+                auto** comp = c->GetValuePtrByPropertyNameInChain<UObject*>(STR("CharacterParameterComponent"));
+                if (!comp || !*comp)
+                {
+                    continue;
+                }
+                auto** indiv = (*comp)->GetValuePtrByPropertyNameInChain<UObject*>(STR("IndividualParameter"));
+                if (!indiv || !*indiv)
+                {
+                    continue;
+                }
+                const auto* save = (*indiv)->GetValuePtrByPropertyNameInChain<uint8_t>(STR("SaveParameter"));
+                if (!save || !is_wild(*indiv))
+                {
+                    continue;
+                }
+                const FName id = *reinterpret_cast<const FName*>(save + off.character_id);
+                if (Collected::species_key(id.ToString()) != want)
+                {
+                    continue;
+                }
+                Engine::ParamsIsRarePal dead{};
+                if (Engine::call(*indiv, L"IsDead", dead) && dead.ReturnValue)
+                {
+                    continue;
+                }
+                double wx = 0, wy = 0, wz = 0;
+                if (!Engine::actor_location(c, wx, wy, wz) || (wx == 0.0 && wy == 0.0))
+                {
+                    continue;
+                }
+                const double d2 = (wx - px) * (wx - px) + (wy - py) * (wy - py);
+                if (!have || d2 < best)
+                {
+                    have = true;
+                    best = d2;
+                    out_wx = wx;
+                    out_wy = wy;
+                    out_wz = wz;
+                }
+            }
+            if (have)
+            {
+                out_dist = std::sqrt(best);
+            }
+            return have;
+        }
+
         auto nearest_uncaught_among(const std::vector<UObject*>& chars, UObject* ctx, double px, double py,
                                     double& out_wx, double& out_wy, double& out_dist, std::wstring& out_species,
                                     int32_t& out_count) -> bool
@@ -4637,13 +5118,13 @@ inline bool g_wp_on = false;
                                                 rare, total);
                 return 0;
             }
-            const auto pos = m_calibration->transform.apply(wx, wy);
+            const auto pos = project(wx, wy);
             if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
             {
                 return 0;
             }
             const size_t idx =
-                emit_dot(image_class, pos, {wx, wy}, kLuckyColor, nullptr, kPoiDotPx, true, kLuckyLayer);
+                emit_dot(image_class, pos, {wx, wy}, kLuckyColor, kLuckyIcon, kPoiDotPx, true, kLuckyLayer);
             Output::send<LogLevel::Default>(STR("[Lodestone] lucky: {} rare of {} pals, nearest {:.0f}m\n"),
                                             rare, total, dist / 100.0);
             return idx != SIZE_MAX ? 1 : 0;
@@ -4722,7 +5203,9 @@ inline bool g_wp_on = false;
             // The Pal walk feeds two layers (Lucky and Catch). All layers off: publish an
             // empty list without walking.
             const bool wanted =
-                is_layer_on(kKinds[kind].layer) || (kind == kLivePal && is_layer_on(kCatchLayer));
+                is_layer_on(kKinds[kind].layer) || (kind == kLivePal && is_layer_on(kCatchLayer)) ||
+                (kind == kLiveDungeon && is_layer_on(kBossDungeonLayer)) ||
+                (kind == kLivePal && !g_track_pal.empty() && is_layer_on(kPalSpeciesLayer));
             if (wanted)
             {
                 std::vector<UObject*> objs;
@@ -4822,6 +5305,28 @@ inline bool g_wp_on = false;
                 const int layer = kLayerOf[kind];
                 LiveNearest ln{};
                 int rare = 0, total = 0;
+                if (kind == kLiveDungeon)
+                {
+                    // One walk, two layers: random caves -> Dungeon, fixed boss instances ->
+                    // Boss Dungeons.
+                    std::vector<UObject*> caves, bosses;
+                    for (auto* o : objs)
+                    {
+                        (is_fixed_entrance(o) ? bosses : caves).push_back(o);
+                    }
+                    LiveNearest bn{};
+                    if (is_layer_on(kDungeonLayer))
+                    {
+                        ln.valid = nearest_among(caves, px, py, ln.wx, ln.wy, ln.dist);
+                    }
+                    if (is_layer_on(kBossDungeonLayer))
+                    {
+                        bn.valid = nearest_among(bosses, px, py, bn.wx, bn.wy, bn.dist);
+                    }
+                    m_live_nearest[kDungeonLayer] = ln;
+                    m_live_nearest[kBossDungeonLayer] = bn;
+                    continue;
+                }
                 if (!is_layer_on(layer))
                 {
                     // leave ln invalid: the compass injection erases the layer
@@ -4895,6 +5400,83 @@ inline bool g_wp_on = false;
                     }
                     m_live_nearest[kCatchLayer] = cn;
                 }
+                // Track-one-Pal, live: a real one beats every marker; reached markers with
+                // none there are hidden for kTrackForget and the next nearest takes over.
+                {
+                    LiveNearest tn{};
+                    if (!g_track_pal.empty() && is_layer_on(kPalSpeciesLayer))
+                    {
+                        double lx = 0, ly = 0, lz = 0, ld = 0;
+                        const bool seen = nearest_tracked_among(objs, px, py, lx, ly, lz, ld);
+                        size_t newly = 0;
+                        for (const auto& t : m_track_pts)
+                        {
+                            const double dx = t.x - px, dy = t.y - py;
+                            if (dx * dx + dy * dy > kTrackReachUU * kTrackReachUU)
+                            {
+                                continue;
+                            }
+                            if (seen && std::hypot(lx - t.x, ly - t.y) < kTrackOccupiedUU)
+                            {
+                                continue;   // one is right here: keep the point
+                            }
+                            if (m_track_cleared.try_emplace(track_key(t.x, t.y), now).second)
+                            {
+                                ++newly;
+                            }
+                        }
+                        if (newly)
+                        {
+                            Output::send<LogLevel::Default>(
+                                STR("[Lodestone] tracked Pal '{}': reached {} spawn point(s) with none there -- "
+                                    "hidden for 10 min ({} hidden)\n"),
+                                g_track_pal.c_str(), newly, m_track_cleared.size());
+                        }
+                        if (seen)
+                        {
+                            tn.valid = true;
+                            tn.wx = lx;
+                            tn.wy = ly;
+                            tn.wz = lz;
+                            tn.has_z = true;
+                            tn.dist = ld;
+                            if (!m_track_seen)
+                            {
+                                Output::send<LogLevel::Default>(
+                                    STR("[Lodestone] tracked Pal '{}' SPOTTED live, {:.0f}m away\n"),
+                                    g_track_pal.c_str(), ld / 100.0);
+                            }
+                            m_track_seen = true;
+                        }
+                        else
+                        {
+                            m_track_seen = false;
+                            double best = 0.0;
+                            for (const auto& t : m_track_pts)
+                            {
+                                if (track_cleared(t.x, t.y, now))
+                                {
+                                    continue;
+                                }
+                                const double d2 = (t.x - px) * (t.x - px) + (t.y - py) * (t.y - py);
+                                if (!tn.valid || d2 < best)
+                                {
+                                    tn.valid = true;
+                                    best = d2;
+                                    tn.wx = t.x;
+                                    tn.wy = t.y;
+                                    tn.wz = t.z;
+                                    tn.has_z = true;
+                                }
+                            }
+                            if (tn.valid)
+                            {
+                                tn.dist = std::sqrt(best);
+                            }
+                        }
+                    }
+                    m_live_nearest[kPalSpeciesLayer] = tn;
+                }
                 // Lucky: the range-alert latch (fires once per approach).
                 const bool in_range = ln.valid && ln.dist < kLuckyRangeUU;
                 const bool out_range = !ln.valid || ln.dist > kLuckyRangeUU + kLuckyHystUU;
@@ -4923,9 +5505,10 @@ inline bool g_wp_on = false;
                         return (it != m_live_nearest.end() && it->second.valid) ? it->second.dist / 100.0 : -1.0;
                     };
                     Output::send<LogLevel::Default>(
-                        STR("[Lodestone] live nearest (no map): egg={:.0f}m dungeon={:.0f}m schematic={:.0f}m "
-                            "lucky={:.0f}m\n"),
-                        dm(kEggLayer), dm(kDungeonLayer), dm(kSchematicLayer), dm(kLuckyLayer));
+                        STR("[Lodestone] live nearest (no map): egg={:.0f}m dungeon={:.0f}m boss-dungeon={:.0f}m "
+                            "schematic={:.0f}m lucky={:.0f}m\n"),
+                        dm(kEggLayer), dm(kDungeonLayer), dm(kBossDungeonLayer), dm(kSchematicLayer),
+                        dm(kLuckyLayer));
                 }
             }
         }
@@ -4948,7 +5531,18 @@ inline bool g_wp_on = false;
             // name -- a typo'd TrackPal just finds nothing and marks nothing.
             const FName target(g_track_pal.c_str(), FNAME_Find);
             const uint32_t target_idx = *reinterpret_cast<const uint32_t*>(&target);
-            std::unordered_set<uint32_t> spawner_keys;   // wild SpawnerNames that spawn it
+            // A spawner area (SpawnerName) rolls ONE of its rows by Weight (0x1C), and a row
+            // may be day- or night-only (OnlyTime 0x20: 1 day, 2 night). Marking every area
+            // that lists the Pal at all pointed Kenny at 5,327 spots for MimicDog, most where
+            // it is a rare roll -- "couldn't find mimogs at all". So score each area by the
+            // Pal's share of its weight and keep only the likeliest ones (>= half the best).
+            struct AreaStat
+            {
+                double total = 0.0, mine = 0.0;
+                int rows = 0, mine_rows = 0;
+                bool day = false, night = false, anytime = false;
+            };
+            std::unordered_map<uint32_t, AreaStat> areas;
             for (auto& kv : wild->GetRowMap())
             {
                 uint8_t* row = kv.Value;
@@ -4956,70 +5550,139 @@ inline bool g_wp_on = false;
                 {
                     continue;
                 }
+                auto& a = areas[*reinterpret_cast<uint32_t*>(row + 0x10)];   // SpawnerName
+                const float w = *reinterpret_cast<float*>(row + 0x1C);        // Weight
+                const double wd = (w > 0.0f && w < 1e6f) ? static_cast<double>(w) : 0.0;
+                a.total += wd;
+                ++a.rows;
                 for (size_t off : {size_t{0x24}, size_t{0x44}, size_t{0x64}})   // Pal_1/2/3
                 {
                     if (*reinterpret_cast<uint32_t*>(row + off) == target_idx)
                     {
-                        spawner_keys.insert(*reinterpret_cast<uint32_t*>(row + 0x10));   // SpawnerName
+                        a.mine += wd;
+                        ++a.mine_rows;
+                        const uint8_t t = row[0x20];   // OnlyTime
+                        (t == 1 ? a.day : t == 2 ? a.night : a.anytime) = true;
                         break;
                     }
                 }
             }
-            if (spawner_keys.empty())
-            {
-                Output::send<LogLevel::Default>(STR("[Lodestone] tracked Pal '{}': no spawner rows\n"),
-                                                g_track_pal.c_str());
-                return 0;
-            }
-            // Collect every matching world point, then emit only the nearest kPalMaxDots
-            // to the player -- the full set (~400 for a common Pal) ballooned the widget
-            // pool and crashed Slate, and Kenny wants the closest ones, not all.
-            std::vector<std::pair<double, double>> pts;
+            auto share = [](const AreaStat& a) {
+                return a.total > 0.0 ? a.mine / a.total
+                                     : (a.rows ? static_cast<double>(a.mine_rows) / a.rows : 0.0);
+            };
+            // Gather each listing area's surface points BEFORE scoring. Some areas list the
+            // Pal but have no row in the placement table (MimicDog: 6 areas that roll only
+            // Mimog -- dungeon/mimic spawners placed elsewhere). Scoring them set best = 100%,
+            // the 50% cut then dropped every overworld area, and the map showed 0 of 0
+            // (Kenny, 11-27). So only areas with a point you can walk to are scored.
+            std::unordered_map<uint32_t, std::vector<TrackPt>> area_pts;
+            size_t interior = 0;
             for (auto& kv : placement->GetRowMap())
             {
                 uint8_t* row = kv.Value;
-                if (!row || !spawner_keys.contains(*reinterpret_cast<uint32_t*>(row + 0x18)))   // SpawnerName
+                if (!row)
+                {
+                    continue;
+                }
+                const uint32_t key = *reinterpret_cast<uint32_t*>(row + 0x18);   // SpawnerName
+                const auto ait = areas.find(key);
+                if (ait == areas.end() || !ait->second.mine_rows)
                 {
                     continue;
                 }
                 const double wx = *reinterpret_cast<double*>(row + 0x28);   // Location.X
                 const double wy = *reinterpret_cast<double*>(row + 0x30);   // Location.Y
+                const double wz = *reinterpret_cast<double*>(row + 0x38);   // Location.Z
+                if (wz < -15000.0)
+                {
+                    ++interior;   // dungeon interior (SPEC surface cut): its x/y is not where it shows
+                    continue;
+                }
                 if (wx != 0.0 || wy != 0.0)
                 {
-                    pts.push_back({wx, wy});
+                    area_pts[key].push_back({wx, wy, wz});
+                }
+            }
+            double best_share = 0.0;
+            size_t listed = 0, unplaced = 0;
+            for (const auto& [k, a] : areas)
+            {
+                if (!a.mine_rows)
+                {
+                    continue;
+                }
+                ++listed;
+                if (!area_pts.contains(k))
+                {
+                    ++unplaced;   // lists the Pal, but no surface point on the map
+                    continue;
+                }
+                best_share = std::max(best_share, share(a));
+            }
+            if (!listed)
+            {
+                Output::send<LogLevel::Default>(STR("[Lodestone] tracked Pal '{}': no spawner rows\n"),
+                                                g_track_pal.c_str());
+                return 0;
+            }
+            const double keep_share = best_share * 0.5;
+            std::vector<TrackPt> pts;
+            size_t kept_areas = 0;
+            bool any_day = false, any_night = false, any_time = false;
+            for (const auto& [k, v] : area_pts)
+            {
+                const auto& a = areas[k];
+                if (share(a) >= keep_share)
+                {
+                    ++kept_areas;
+                    pts.insert(pts.end(), v.begin(), v.end());
+                    any_day |= a.day;
+                    any_night |= a.night;
+                    any_time |= a.anytime;
                 }
             }
             const size_t total = pts.size();
+            m_track_pts = pts;   // the live tracker (refresh_live_nearest) works from all of them
+            const auto now_c = std::chrono::steady_clock::now();
+            std::erase_if(pts, [&](const TrackPt& t) { return track_cleared(t.x, t.y, now_c); });
+            const size_t checked = total - pts.size();
             double px = 0, py = 0, pz = 0;
             if (player_pos(px, py, pz) && pts.size() > kPalMaxDots)
             {
                 std::nth_element(pts.begin(), pts.begin() + kPalMaxDots, pts.end(),
-                                 [px, py](const auto& a, const auto& b) {
-                                     const double da = (a.first - px) * (a.first - px) +
-                                                       (a.second - py) * (a.second - py);
-                                     const double db = (b.first - px) * (b.first - px) +
-                                                       (b.second - py) * (b.second - py);
+                                 [px, py](const TrackPt& a, const TrackPt& b) {
+                                     const double da = (a.x - px) * (a.x - px) + (a.y - py) * (a.y - py);
+                                     const double db = (b.x - px) * (b.x - px) + (b.y - py) * (b.y - py);
                                      return da < db;
                                  });
                 pts.resize(kPalMaxDots);
             }
             size_t shown = 0;
-            for (const auto& [wx, wy] : pts)
+            const wchar_t* const pal_icon = track_pal_icon();
+            for (const auto& t : pts)
             {
-                const auto pos = m_calibration->transform.apply(wx, wy);
+                const double wx = t.x, wy = t.y;
+                const auto pos = project(wx, wy);
                 if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                 {
                     continue;
                 }
-                if (emit_dot(image_class, pos, {wx, wy}, kPalColor, nullptr, kPalDotPx, true,
+                if (emit_dot(image_class, pos, {wx, wy}, kPalColor, pal_icon, kPalDotPx, true,
                              kPalSpeciesLayer) != SIZE_MAX)
                 {
                     ++shown;
                 }
             }
+            const wchar_t* when = (any_time || (any_day && any_night)) ? STR("any time")
+                                  : any_night                          ? STR("NIGHT only")
+                                                                       : STR("DAY only");
             Output::send<LogLevel::Default>(
-                STR("[Lodestone] tracked Pal '{}': nearest {} of {} spawn points from {} spawner(s)\n"),
-                g_track_pal.c_str(), shown, total, spawner_keys.size());
+                STR("[Lodestone] tracked Pal '{}': nearest {} of {} spawn points in the {} likeliest of {} areas "
+                    "(best {:.0f}% of an area's spawns, kept >= {:.0f}%; {}; {} dungeon-interior points cut; "
+                    "{} areas with no map point skipped; {} checked with none there, hidden for now)\n"),
+                g_track_pal.c_str(), shown, total, kept_areas, listed, best_share * 100.0, keep_share * 100.0, when,
+                interior, unplaced, checked);
             return shown;
         }
 
@@ -5147,14 +5810,27 @@ inline bool g_wp_on = false;
                 std::wstring disp;
                 if (can_call)
                 {
-                    GLT p{};
-                    p.WorldContextObject = ctx;
-                    p.TextCategory = 4;   // PalMonsterName
-                    p.TextId = FName(internal.c_str(), FNAME_Find);
-                    util->ProcessEvent(fn, &p);
-                    disp = p.ReturnValue.ToString();
+                    // DT_PalNameText keys are "PAL_NAME_<id>" (PAL_NAME_MimicDog -> "Mimog",
+                    // read from the pak). The bare id finds no row, and GetLocalizedText then
+                    // echoes the id back -- 11-27 log: "482 of 482 localized" yet
+                    // "MimicDog -> MimicDog". So ask with the prefix first, then the bare id,
+                    // and never count an echo of what we asked as a real name.
+                    for (const std::wstring key : {L"PAL_NAME_" + internal, internal})
+                    {
+                        GLT p{};
+                        p.WorldContextObject = ctx;
+                        p.TextCategory = 4;   // PalMonsterName
+                        p.TextId = FName(key.c_str(), FNAME_Add);
+                        util->ProcessEvent(fn, &p);
+                        std::wstring got = p.ReturnValue.ToString();
+                        if (!got.empty() && got != STR("None") && got != key && got != internal)
+                        {
+                            disp = std::move(got);
+                            break;
+                        }
+                    }
                 }
-                if (disp.empty() || disp == STR("None"))
+                if (disp.empty())
                 {
                     disp = prettify_internal(internal);
                 }
@@ -5167,6 +5843,14 @@ inline bool g_wp_on = false;
             Output::send<LogLevel::Default>(
                 STR("[Lodestone] pal names: {} of {} localized{}\n"), resolved, m_pal_species.size(),
                 can_call ? STR("") : STR(" (reflected lookup unavailable -- prettified)"));
+            for (const wchar_t* probe : {STR("MimicDog"), STR("SheepBall"), STR("CandleGhost")})
+            {
+                auto it = m_pal_display.find(probe);
+                if (it != m_pal_display.end())
+                {
+                    Output::send<LogLevel::Default>(STR("[Lodestone] pal name sample: {} -> {}\n"), probe, it->second);
+                }
+            }
         }
 
         // The name to show for an internal species id: localized if resolved, else the
@@ -5371,7 +6055,22 @@ inline bool g_wp_on = false;
                     {
                         ch = static_cast<wchar_t>(std::towlower(ch));
                     }
-                    const size_t at = low.find(m_pal_query);
+                    size_t at = low.find(m_pal_query);
+                    if (at != 0 && m_pal_query.size() > 1)
+                    {
+                        // Also match the code id ("mimicdog" finds Mimog), so a Pal is
+                        // findable by either name (Kenny: the in-game and code names differ).
+                        std::wstring id = s;
+                        for (auto& ch : id)
+                        {
+                            ch = static_cast<wchar_t>(std::towlower(ch));
+                        }
+                        const size_t at_id = id.find(m_pal_query);
+                        if (at == std::wstring::npos || (at_id == 0))
+                        {
+                            at = at_id;
+                        }
+                    }
                     if (at == 0 || (at != std::wstring::npos && m_pal_query.size() > 1))
                     {
                         hits.push_back({at == 0, std::move(disp), &s});
@@ -5769,9 +6468,9 @@ inline bool g_wp_on = false;
             for (size_t i = 0; i < placed; ++i)
             {
                 const Dot& d = m_dots[i];
-                if (d.base_hidden)
+                if (d.base_hidden || d.backing)
                 {
-                    continue;   // already collected: not something you still need
+                    continue;   // collected, or a note's pin disc (its icon dot is the marker)
                 }
                 const double dx = d.wx - px;
                 const double dy = d.wy - py;
@@ -5787,7 +6486,12 @@ inline bool g_wp_on = false;
                 {
                     deg += 360.0;
                 }
-                m_nearest[d.layer_id] = Nearest{dist, deg, d.wx, d.wy, d.icon, d.color};
+                Nearest nn{dist, deg, d.wx, d.wy, d.icon, d.color};
+                if (d.layer_id == kEffigyLayer)
+                {
+                    nn.has_z = effigy_z(d.wx, d.wy, nn.wz);
+                }
+                m_nearest[d.layer_id] = nn;
             }
             m_have_player = true;
         }
@@ -6072,7 +6776,7 @@ inline bool g_wp_on = false;
                                                   Style::srgb8(layer.b), layer.a / 255.0f};
                 for (size_t i = 0; i < layer.count; ++i)
                 {
-                    const auto pos = m_calibration->transform.apply(layer.points[i].x, layer.points[i].y);
+                    const auto pos = project(layer.points[i].x, layer.points[i].y);
                     if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                     {
                         continue;
@@ -6143,8 +6847,8 @@ inline bool g_wp_on = false;
                         ++layer_hidden;
                     }
                     const auto xy = coord_fn(i);
-                    const auto pos = m_calibration->transform.apply(xy.first, xy.second);
-                    if (pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
+                    const auto pos = project(xy.first, xy.second);
+                    if (pos.x != pos.x || pos.x < -2000 || pos.x > 6000 || pos.y < -2000 || pos.y > 6000)
                     {
                         continue;
                     }
@@ -6157,6 +6861,7 @@ inline bool g_wp_on = false;
                                                      backing_border_col);
                         if (bidx != SIZE_MAX)
                         {
+                            m_dots[bidx].backing = true;
                             m_guid_dots.push_back({bidx, key});   // copy: key reused below
                             ++placed;
                         }
@@ -6312,7 +7017,7 @@ inline bool g_wp_on = false;
             // m_live_begin -- re-emitting into a still-present range trips emit_dot's
             // "layer resumed non-contiguously" guard and disables per-layer ranges pool-wide.
             for (int lid : {kEggLayer, kFastTravelLayer, kTowerLayer, kSealedLayer, kPalSpeciesLayer,
-                            kDungeonLayer, kSchematicLayer, kLuckyLayer})
+                            kDungeonLayer, kBossDungeonLayer, kSchematicLayer, kLuckyLayer})
             {
                 m_layer_ranges.erase(lid);
             }
@@ -7639,7 +8344,8 @@ inline bool g_wp_on = false;
                 // An off live-actor layer is never scanned (live_objects), so it has no count.
                 const bool unscanned = !is_layer_on(it.id) &&
                                        (it.id == kEggLayer || it.id == kDungeonLayer ||
-                                        it.id == kSchematicLayer || it.id == kLuckyLayer);
+                                        it.id == kBossDungeonLayer || it.id == kSchematicLayer ||
+                                        it.id == kLuckyLayer);
                 const std::wstring cs =
                     (found >= 0)  ? std::to_wstring(found) + L"/" + std::to_wstring(layer_total(it.id))
                     : unscanned ? std::wstring(L"-")
@@ -8021,6 +8727,295 @@ inline bool g_wp_on = false;
 
         // Drop the compass caches WITHOUT touching the (dead) widgets -- pointer writes
         // only, safe after the HUD that owned them was destroyed.
+        // ---- In-world marker (WorldMarker) -------------------------------------------
+        // A full-screen canvas on the HUD; each target's 3-D point is projected with UMG's
+        // own WidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition every frame, so the
+        // icon sits on the spot (height included). Behind the camera = hidden (the compass
+        // covers that). Slot 0 = tracked Pal, 1 = nearest effigy.
+        struct ParamsProjectToWidget
+        {
+            UObject* PlayerController{};       // 0x00
+            Engine::FVector_ WorldLocation{};  // 0x08
+            Engine::FVector2D_ ScreenPosition{};   // 0x20
+            bool bPlayerViewportRelative{};    // 0x30
+            bool ReturnValue{};                // 0x31
+        };
+        struct WorldMark
+        {
+            UObject* icon = nullptr;
+            UObject* icon_slot = nullptr;
+            UObject* label = nullptr;
+            UObject* label_slot = nullptr;
+            const wchar_t* cur_icon = nullptr;
+            bool styled = false;
+            std::wstring cur_text;
+            bool shown = false;
+        };
+        UObject* m_wm_canvas = nullptr;
+        int32_t m_wm_canvas_idx = -1;
+        std::wstring m_wm_root_name;
+        WorldMark m_wm[2];
+        std::chrono::steady_clock::time_point m_next_wm_scan{};
+        UObject* m_wll = nullptr;   // Default__WidgetLayoutLibrary
+        int m_wll_ok = -1;          // -1 unchecked, 0 layout mismatch (never call), 1 ok
+
+        auto drop_world_marks() -> void
+        {
+            m_wm_canvas = nullptr;
+            m_wm_canvas_idx = -1;
+            for (auto& m : m_wm)
+            {
+                m = WorldMark{};
+            }
+        }
+
+        auto build_world_marks() -> void
+        {
+            if (m_wm_canvas && !slot_live(m_wm_canvas, m_wm_canvas_idx))
+            {
+                drop_world_marks();
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (!g_world_marker || (m_wm_canvas && now < m_next_wm_scan))
+            {
+                return;
+            }
+            m_next_wm_scan = now + std::chrono::milliseconds(5000);
+            UObject* root = hud_root();
+            if (!root)
+            {
+                return;
+            }
+            const std::wstring root_name = root->GetFullName();
+            if (m_wm_canvas)
+            {
+                if (m_wm_root_name == root_name)
+                {
+                    return;
+                }
+                drop_world_marks();   // HUD rebuilt
+            }
+            auto* canvas_class =
+                UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.CanvasPanel"));
+            auto* image_class = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.Image"));
+            auto* txt_class = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/UMG.TextBlock"));
+            if (!canvas_class || !image_class || !txt_class)
+            {
+                return;
+            }
+            sweep_stale_hud_canvas(root, L"Lodestone_WorldMarks");
+            {
+                FStaticConstructObjectParameters params{canvas_class, root};
+                params.Name = FName(STR("Lodestone_WorldMarks"));
+                m_wm_canvas = UObjectGlobals::StaticConstructObject(params);
+            }
+            if (!m_wm_canvas)
+            {
+                return;
+            }
+            Engine::ParamsAddChildToCanvas add{m_wm_canvas, nullptr};
+            if (!Engine::call(root, L"AddChildToCanvas", add) || !add.ReturnValue)
+            {
+                m_wm_canvas = nullptr;
+                return;
+            }
+            m_wm_canvas_idx = m_wm_canvas->GetInternalIndex();
+            {
+                UObject* slot = add.ReturnValue;
+                Engine::ParamsSetAnchors fa{0, 0, 1, 1};   // stretch over the whole viewport
+                Engine::call(slot, L"SetAnchors", fa);
+                Engine::ParamsSetOffsets fo{0.0f, 0.0f, 0.0f, 0.0f};
+                Engine::call(slot, L"SetOffsets", fo);
+                Engine::ParamsSetZOrder z{40};
+                Engine::call(slot, L"SetZOrder", z);
+                Engine::ParamsSetVisibility v{Engine::Vis_HitTestInvisible};
+                Engine::call(m_wm_canvas, L"SetVisibility", v);
+            }
+            auto add_child = [&](UObject* w, double ax, double ay) -> UObject* {
+                Engine::ParamsAddChildToCanvas a{w, nullptr};
+                if (!Engine::call(m_wm_canvas, L"AddChildToCanvas", a) || !a.ReturnValue)
+                {
+                    return nullptr;
+                }
+                Engine::ParamsSetAnchors an{0, 0, 0, 0};
+                Engine::call(a.ReturnValue, L"SetAnchors", an);
+                Engine::ParamsSetAlignment al{{ax, ay}};
+                Engine::call(a.ReturnValue, L"SetAlignment", al);
+                return a.ReturnValue;
+            };
+            for (auto& m : m_wm)
+            {
+                FStaticConstructObjectParameters ip{image_class, m_wm_canvas};
+                m.icon = UObjectGlobals::StaticConstructObject(ip);
+                m.icon_slot = m.icon ? add_child(m.icon, 0.5, 1.0) : nullptr;   // bottom tip on the spot
+                FStaticConstructObjectParameters tp{txt_class, m_wm_canvas};
+                m.label = UObjectGlobals::StaticConstructObject(tp);
+                m.label_slot = m.label ? add_child(m.label, 0.5, 0.0) : nullptr;
+                if (m.label_slot)
+                {
+                    Engine::ParamsSetTextColor tc{{1.0f, 1.0f, 1.0f, 0.95f}, 0};
+                    Engine::call(m.label, L"SetColorAndOpacity", tc);
+                    Engine::ParamsSetJustification j{1};   // centre
+                    Engine::call(m.label, L"SetJustification", j);
+                    Engine::ParamsSetRenderScale rs{{0.6, 0.6}};
+                    Engine::call(m.label, L"SetRenderScale", rs);
+                }
+                for (UObject* w : {m.icon, m.label})
+                {
+                    if (w)
+                    {
+                        Engine::ParamsSetVisibility v{Engine::Vis_Collapsed};
+                        Engine::call(w, L"SetVisibility", v);
+                    }
+                }
+            }
+            m_wm_root_name = root_name;
+            Output::send<LogLevel::Default>(STR("[Lodestone] world marker built on {}\n"), root_name);
+        }
+
+        auto hide_world_mark(WorldMark& m) -> void
+        {
+            if (!m.shown)
+            {
+                return;
+            }
+            for (UObject* w : {m.icon, m.label})
+            {
+                if (w)
+                {
+                    Engine::ParamsSetVisibility v{Engine::Vis_Collapsed};
+                    Engine::call(w, L"SetVisibility", v);
+                }
+            }
+            m.shown = false;
+        }
+
+        auto tick_world_marks() -> void
+        {
+            if (!m_wm_canvas || !slot_live(m_wm_canvas, m_wm_canvas_idx))
+            {
+                return;
+            }
+            UObject* const pc = live_mm_pc();
+            double px = 0, py = 0, pz = 0, yaw = 0;
+            bool has_yaw = false;
+            const bool active = g_world_marker && !m_map_shown && pc && player_pose(px, py, pz, yaw, has_yaw);
+            if (active && m_wll_ok < 0)
+            {
+                m_wll = UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr,
+                                                                   STR("/Script/UMG.Default__WidgetLayoutLibrary"));
+                m_wll_ok = verify_params(m_wll, L"ProjectWorldLocationToWidgetPosition",
+                                         {{L"PlayerController", 0x00},
+                                          {L"WorldLocation", 0x08},
+                                          {L"ScreenPosition", 0x20},
+                                          {L"bPlayerViewportRelative", 0x30},
+                                          {L"ReturnValue", 0x31}})
+                               ? 1
+                               : 0;
+                Output::send<LogLevel::Default>(STR("[Lodestone] world marker projection {}\n"),
+                                                m_wll_ok ? STR("ready") : STR("UNAVAILABLE (layout mismatch)"));
+            }
+            static constexpr int kMarkLayer[2] = {kPalSpeciesLayer, kEffigyLayer};
+            const bool icons = m_icons_ready.load(std::memory_order_acquire);
+            constexpr double isz = 34.0;
+            for (int i = 0; i < 2; ++i)
+            {
+                WorldMark& m = m_wm[i];
+                const int layer = kMarkLayer[i];
+                const Nearest* n = nullptr;
+                if (active && m_wll_ok == 1 && m.icon_slot && is_layer_on(layer))
+                {
+                    auto it = m_nearest.find(layer);
+                    if (it != m_nearest.end() && it->second.has_z)
+                    {
+                        n = &it->second;
+                    }
+                }
+                const double dx = n ? n->wx - px : 0.0, dy = n ? n->wy - py : 0.0;
+                const double hdist = std::sqrt(dx * dx + dy * dy);
+                if (!n || hdist > g_world_marker_range * 100.0)
+                {
+                    hide_world_mark(m);
+                    continue;
+                }
+                // Aim a little above the point: spawn points sit on the ground, effigies at their base.
+                ParamsProjectToWidget pp{pc, {n->wx, n->wy, n->wz + 120.0}, {}, false, false};
+                if (!Engine::call(m_wll, L"ProjectWorldLocationToWidgetPosition", pp) || !pp.ReturnValue)
+                {
+                    hide_world_mark(m);   // behind the camera
+                    continue;
+                }
+                const float sx = static_cast<float>(pp.ScreenPosition.X);
+                const float sy = static_cast<float>(pp.ScreenPosition.Y);
+                if (!m.styled || m.cur_icon != n->icon)
+                {
+                    const bool glyph = n->icon && Style::icon_is_glyph(n->icon);
+                    UObject* tex = (icons && n->icon) ? layer_texture(n->icon) : nullptr;
+                    if (tex)
+                    {
+                        Engine::ParamsSetBrushFromTexture b{tex, false};
+                        Engine::call(m.icon, L"SetBrushFromTexture", b);
+                        Style::make_image(m.icon, isz);
+                        Engine::ParamsSetColorAndOpacity c{glyph ? n->color
+                                                                 : Engine::FLinearColor_{1.0f, 1.0f, 1.0f, 1.0f}};
+                        Engine::call(m.icon, L"SetColorAndOpacity", c);
+                        m.cur_icon = n->icon;
+                    }
+                    else
+                    {
+                        Engine::ParamsSetBrushResourceObject none{nullptr};
+                        Engine::call(m.icon, L"SetBrushResourceObject", none);
+                        Style::make_round(m.icon, isz / 2.0);
+                        Engine::ParamsSetColorAndOpacity c{n->color};
+                        Engine::call(m.icon, L"SetColorAndOpacity", c);
+                        m.cur_icon = nullptr;
+                    }
+                    m.styled = tex != nullptr;
+                }
+                Engine::ParamsSetOffsets io{sx, sy, static_cast<float>(isz), static_cast<float>(isz)};
+                Engine::call(m.icon_slot, L"SetOffsets", io);
+                if (m.label_slot)
+                {
+                    const double dz = n->wz - pz;
+                    const double d3 = std::sqrt(hdist * hdist + dz * dz) / 100.0;
+                    std::wstring text = (i == 0) ? display_name(g_track_pal) : std::wstring(L"Effigy");
+                    if (i == 0 && !m_track_seen)
+                    {
+                        text += L" spawn";
+                    }
+                    wchar_t buf[32];
+                    std::swprintf(buf, std::size(buf), L"  %.0fm", d3);
+                    text += buf;
+                    if (std::abs(dz) >= 800.0)
+                    {
+                        std::swprintf(buf, std::size(buf), dz > 0 ? L"  (%.0fm up)" : L"  (%.0fm down)",
+                                      std::abs(dz) / 100.0);
+                        text += buf;
+                    }
+                    if (text != m.cur_text)
+                    {
+                        Engine::ParamsSetText st{FText(text.c_str())};
+                        Engine::call(m.label, L"SetText", st);
+                        m.cur_text = text;
+                    }
+                    Engine::ParamsSetOffsets lo{sx, sy + 2.0f, 320.0f, 30.0f};
+                    Engine::call(m.label_slot, L"SetOffsets", lo);
+                }
+                if (!m.shown)
+                {
+                    for (UObject* w : {m.icon, m.label})
+                    {
+                        if (w)
+                        {
+                            Engine::ParamsSetVisibility v{Engine::Vis_HitTestInvisible};
+                            Engine::call(w, L"SetVisibility", v);
+                        }
+                    }
+                    m.shown = true;
+                }
+            }
+        }
+
         auto drop_compass_caches() -> void
         {
             m_compass_canvas = nullptr;
@@ -8088,6 +9083,8 @@ inline bool g_wp_on = false;
             m_minimap_dot_slots.clear();
             m_minimap_dot_icon.clear();
             m_minimap_dot_col.clear();
+            m_minimap_backs.clear();
+            m_minimap_back_slots.clear();
             if (!world_gone && terrain_live())
             {
                 m_terrain_rewire = true;
@@ -8973,6 +9970,8 @@ inline bool g_wp_on = false;
                 // build_compass/tick_compass_strip every frame.
                 build_compass();
                 tick_compass_strip();
+                build_world_marks();
+                tick_world_marks();
                 // Time build vs tick separately to see which carries the residual cost
                 // (periodic FindAllOf in build, or per-frame work in tick). Only trivial
                 // locals here -- the MSVC __try rule forbids objects needing unwind; the
@@ -9316,6 +10315,26 @@ inline bool g_wp_on = false;
                 const float sy = static_cast<float>(half - soy * scale);   // screen +y is down
                 if (cursor >= m_minimap_dots.size())
                 {
+                    // Backing disc first, so it sits under its dot in the canvas's paint order.
+                    UObject* back = nullptr;
+                    UObject* back_slot = nullptr;
+                    {
+                        FStaticConstructObjectParameters bp{image_class, m_minimap_canvas};
+                        back = UObjectGlobals::StaticConstructObject(bp);
+                        Engine::ParamsAddChildToCanvas ba{back, nullptr};
+                        if (!back || !Engine::call(m_minimap_canvas, L"AddChildToCanvas", ba) || !ba.ReturnValue)
+                        {
+                            return;
+                        }
+                        back_slot = ba.ReturnValue;
+                        Engine::ParamsSetAnchors an{0, 0, 0, 0};
+                        Engine::call(back_slot, L"SetAnchors", an);
+                        Engine::ParamsSetAlignment al{{0.5, 0.5}};
+                        Engine::call(back_slot, L"SetAlignment", al);
+                        Style::make_round(back, kMinimapBackPx / 2.0);
+                        Engine::ParamsSetColorAndOpacity bc{{0.02f, 0.03f, 0.05f, 0.72f}};
+                        Engine::call(back, L"SetColorAndOpacity", bc);
+                    }
                     FStaticConstructObjectParameters params{image_class, m_minimap_canvas};
                     UObject* d = UObjectGlobals::StaticConstructObject(params);
                     if (!d)
@@ -9333,6 +10352,8 @@ inline bool g_wp_on = false;
                     Engine::call(a.ReturnValue, L"SetAlignment", al);
                     m_minimap_dots.push_back(d);
                     m_minimap_dot_slots.push_back(a.ReturnValue);
+                    m_minimap_backs.push_back(back);
+                    m_minimap_back_slots.push_back(back_slot);
                     // Not nullptr: that means "styled as a plain dot". A fresh UImage
                     // paints as a white square until styled, and an icon-less layer
                     // (lucky) asks for nullptr -- which used to match and skip the styling.
@@ -9357,8 +10378,10 @@ inline bool g_wp_on = false;
                         // like PalMiniMap. Flattening it to a single-colour silhouette (the glyph
                         // tint) washed it out (Kenny: "icons disappeared" once the day map got
                         // bright). Item/ore glyphs still tint with the layer colour.
-                        const bool framed = icon && (std::wstring_view(icon).starts_with(L"T_icon_compass_") ||
-                                                     std::wstring_view(icon).starts_with(L"T_icon_map_"));
+                        // Only art that carries its own colours goes untinted (icon_is_framed);
+                        // the flat white compass glyphs (dungeon, boss, chest, junk) used to be
+                        // swept in by a T_icon_compass_ prefix test and drew as white blobs.
+                        const bool framed = Style::icon_is_framed(icon);
                         Engine::ParamsSetColorAndOpacity c{
                             (Style::icon_is_glyph(icon) && !framed) ? col
                                                                     : Engine::FLinearColor_{1.0f, 1.0f, 1.0f, 1.0f}};
@@ -9382,6 +10405,15 @@ inline bool g_wp_on = false;
                 Engine::call(m_minimap_dot_slots[cursor], L"SetOffsets", o);
                 Engine::ParamsSetVisibility v{Engine::Vis_HitTestInvisible};
                 Engine::call(dot, L"SetVisibility", v);
+                {
+                    // Icon dots get the dark disc; a plain colour dot is its own marker.
+                    const bool has_icon = m_minimap_dot_icon[cursor] != nullptr;
+                    Engine::ParamsSetOffsets bo{sx, sy, static_cast<float>(kMinimapBackPx),
+                                                static_cast<float>(kMinimapBackPx)};
+                    Engine::call(m_minimap_back_slots[cursor], L"SetOffsets", bo);
+                    Engine::ParamsSetVisibility bv{has_icon ? Engine::Vis_HitTestInvisible : Engine::Vis_Collapsed};
+                    Engine::call(m_minimap_backs[cursor], L"SetVisibility", bv);
+                }
                 ++cursor;
             };
             int li = 0;
@@ -9410,20 +10442,20 @@ inline bool g_wp_on = false;
             for (size_t i = 0; i < pooled; ++i)
             {
                 const Dot& d = m_dots[i];
-                if (d.layer_id < 1000 || d.base_hidden || !is_layer_on(d.layer_id))
+                if (d.layer_id < 1000 || d.base_hidden || d.backing || !is_layer_on(d.layer_id))
                 {
-                    continue;
+                    continue;   // backing: a note's pin disc; the minimap's dark disc replaces it
                 }
                 // Eggs/dungeons/lucky spawn/despawn/stream as you walk, so their POOL
                 // entry (a map-open snapshot) goes stale on the minimap exactly as it did
                 // on the compass. Skip the stale copy -- drawn LIVE from m_live_nearest
                 // just below, matching the compass's live injection.
-                if (d.layer_id == kEggLayer || d.layer_id == kDungeonLayer ||
+                if (d.layer_id == kEggLayer || d.layer_id == kDungeonLayer || d.layer_id == kBossDungeonLayer ||
                     d.layer_id == kSchematicLayer || d.layer_id == kLuckyLayer)
                 {
                     continue;
                 }
-                place(static_cast<double>(d.wx), static_cast<double>(d.wy), d.icon, d.color);
+                place(static_cast<double>(d.wx), static_cast<double>(d.wy), d.icon, Style::srgbf(d.color));
             }
             // Live actor layers: the nearest egg/dungeon/lucky from refresh_live_nearest's
             // own scan (independent of the map-open pool), so the minimap tracks them as
@@ -9437,14 +10469,16 @@ inline bool g_wp_on = false;
                 auto it = m_live_nearest.find(layer);
                 if (it != m_live_nearest.end() && it->second.valid)
                 {
-                    place(static_cast<double>(it->second.wx), static_cast<double>(it->second.wy), icon, color);
+                    place(static_cast<double>(it->second.wx), static_cast<double>(it->second.wy), icon,
+                          Style::srgbf(color));
                 }
             };
             // Eggs carry the egg item art, same as on the big map, so they read as eggs.
             place_live(kEggLayer, Data::kEggIcon, Engine::FLinearColor_{1.0f, 0.82f, 0.15f, 1.0f});
             place_live(kDungeonLayer, kDungeonIcon, kDungeonColor);
+            place_live(kBossDungeonLayer, kBossDungeonIcon, kBossDungeonColor);
             place_live(kSchematicLayer, kSchematicIcon, kSchematicColor);
-            place_live(kLuckyLayer, nullptr, kLuckyColor);
+            place_live(kLuckyLayer, kLuckyIcon, kLuckyColor);
             place_live(kCatchLayer, kCatchIcon, kCatchColor);
             // DIAG: is the vanishing a PLACEMENT problem (cursor==0) or a RENDER/visibility
             // one (cursor>0 but nothing on screen)? Log the placed count + the geometry so
@@ -9474,6 +10508,7 @@ inline bool g_wp_on = false;
             {
                 Engine::ParamsSetVisibility v{Engine::Vis_Collapsed};
                 Engine::call(m_minimap_dots[i], L"SetVisibility", v);
+                Engine::call(m_minimap_backs[i], L"SetVisibility", v);
             }
         }
 
@@ -9688,8 +10723,9 @@ inline bool g_wp_on = false;
                 static const LiveMeta kLiveMeta[] = {
                     {kEggLayer, Data::kEggIcon, {1.0f, 0.82f, 0.15f, 1.0f}},
                     {kDungeonLayer, kDungeonIcon, kDungeonColor},
+                    {kBossDungeonLayer, kBossDungeonIcon, kBossDungeonColor},
                     {kSchematicLayer, kSchematicIcon, kSchematicColor},
-                    {kLuckyLayer, nullptr, kLuckyColor},
+                    {kLuckyLayer, kLuckyIcon, kLuckyColor},
                     {kCatchLayer, kCatchIcon, kCatchColor},
                 };
                 for (const auto& lm : kLiveMeta)
@@ -9701,12 +10737,30 @@ inline bool g_wp_on = false;
                     }
                     if (it->second.valid && is_layer_on(lm.layer))
                     {
-                        m_nearest[lm.layer] =
-                            Nearest{it->second.dist, 0.0, it->second.wx, it->second.wy, lm.icon, lm.color};
+                        m_nearest[lm.layer] = Nearest{it->second.dist, 0.0, it->second.wx, it->second.wy, lm.icon,
+                                                      lm.color, it->second.wz, it->second.has_z};
                     }
                     else
                     {
                         m_nearest.erase(lm.layer);
+                    }
+                }
+                // Tracked Pal: the live tracker's pick (a real one, else the nearest spawn
+                // point not yet checked) replaces the map-open pool's nearest dot.
+                {
+                    auto it = m_live_nearest.find(kPalSpeciesLayer);
+                    if (it != m_live_nearest.end())
+                    {
+                        if (it->second.valid && is_layer_on(kPalSpeciesLayer))
+                        {
+                            m_nearest[kPalSpeciesLayer] = Nearest{it->second.dist, 0.0,          it->second.wx,
+                                                                  it->second.wy,   track_pal_icon(), kPalColor,
+                                                                  it->second.wz,   it->second.has_z};
+                        }
+                        else
+                        {
+                            m_nearest.erase(kPalSpeciesLayer);
+                        }
                     }
                 }
                 // Sticky user waypoint (F3): one fixed world point the compass locks onto
@@ -9718,7 +10772,7 @@ inline bool g_wp_on = false;
                     const double dx = g_wp_x - px, dy = g_wp_y - py;
                     const double d = std::sqrt(dx * dx + dy * dy);
                     m_nearest[kWaypointLayer] =
-                        Nearest{d, 0.0, g_wp_x, g_wp_y, nullptr, kWaypointColor};
+                        Nearest{d, 0.0, g_wp_x, g_wp_y, kWaypointIcon, kWaypointColor};
                 }
                 else
                 {
@@ -10396,6 +11450,8 @@ inline bool g_wp_on = false;
                 // skip the compass whenever the (fragile) minimap tick AV'd mid-transition.
                 build_compass();
                 tick_compass_strip();
+                build_world_marks();
+                tick_world_marks();
                 build_minimap();
                 tick_minimap();
             }
@@ -10408,6 +11464,23 @@ inline bool g_wp_on = false;
                 return;   // torn down in between: try again next tick
             }
             m_frame_bases = found.bases;   // screen_canvas reads it (build_panel, below)
+            if (found.open && (found.map_kind != m_map_kind || found.map_name != m_map_name))
+            {
+                const MapBounds& b = found.have_bounds ? found.bounds : m_body_bounds[found.map_kind];
+                Output::send<LogLevel::Default>(
+                    STR("[Lodestone] map body: '{}' ({}), screen shows '{}', bounds ({:.0f},{:.0f})-({:.0f},{:.0f}) {}\n"),
+                    found.map_name, found.map_kind ? STR("World Tree") : STR("main"), found.screen_map, b.min_x,
+                    b.min_y, b.max_x, b.max_y, found.have_bounds ? STR("read") : STR("built-in"));
+            }
+            if (found.open)
+            {
+                m_map_kind = found.map_kind;
+                m_map_name = found.map_name;
+                if (found.have_bounds)
+                {
+                    m_body_bounds[found.map_kind] = found.bounds;
+                }
+            }
             UObject* const root = found.root;
             UObject* const map_body_canvas = found.body_canvas;
             UObject* const mask = found.mask;
@@ -10458,6 +11531,7 @@ inline bool g_wp_on = false;
                 // the index here would lose the icons permanently.
                 m_icon_scan = 0;
                 m_recheck_cal = true;   // re-evaluate on the new body, but KEEP the best so far
+                m_tree_checked = false;
                 m_placed = false;
                 m_collapsed = true;
                 // NOT the panel. It is parented to WBP_Map_Base, which OUTLIVES the
@@ -10468,7 +11542,55 @@ inline bool g_wp_on = false;
                 // on its own root's identity.
             }
 
-            if (!m_calibration || m_recheck_cal)
+            if (m_map_kind == 1)
+            {
+                // World Tree body: no boss towers to seed a fit, ~15 statues. Reuse the main
+                // map's fit through project(); refitting here would only replace it.
+                m_recheck_cal = false;
+                if (!m_calibration)
+                {
+                    if (!m_tree_nocal_logged)
+                    {
+                        m_tree_nocal_logged = true;
+                        Output::send<LogLevel::Default>(
+                            STR("[Lodestone] World Tree map before any main-map fit (first run): switch to the "
+                                "main map once\n"));
+                    }
+                    return;
+                }
+                if (!m_tree_checked)
+                {
+                    // Proof the shared-UV assumption holds: predicted Tree statues vs the
+                    // fast-travel pins this body actually draws. Small px = right.
+                    std::vector<Project::Vec2> pins;
+                    read_pins(mask, L"WBP_Map_IconFTTower_C", pins);
+                    if (!pins.empty())
+                    {
+                        m_tree_checked = true;
+                        std::vector<double> d;
+                        for (const auto& st : Data::kStatues)
+                        {
+                            if (!in_tree(st.x, st.y))
+                            {
+                                continue;
+                            }
+                            const auto q = project(st.x, st.y);
+                            double best = 1e18;
+                            for (const auto& pn : pins)
+                            {
+                                best = std::min(best, std::hypot(pn.x - q.x, pn.y - q.y));
+                            }
+                            d.push_back(best);
+                        }
+                        std::sort(d.begin(), d.end());
+                        Output::send<LogLevel::Default>(
+                            STR("[Lodestone] World Tree map: {} statues vs {} pins, nearest-pin px median {:.1f} "
+                                "max {:.1f} (small = Tree dots line up)\n"),
+                            d.size(), pins.size(), d.empty() ? -1.0 : d[d.size() / 2], d.empty() ? -1.0 : d.back());
+                    }
+                }
+            }
+            else if (!m_calibration || m_recheck_cal)
             {
                 m_recheck_cal = false;
                 std::vector<Project::Vec2> boss_pins, statue_pins;
@@ -10504,6 +11626,7 @@ inline bool g_wp_on = false;
                         (!m_calibration || cand->refine_residual_px < m_calibration->refine_residual_px))
                     {
                         m_calibration = cand;
+                        save_calibration();
                         Output::send<LogLevel::Default>(
                             STR("[Lodestone] calibrated: seed {:.1f}px refine {:.2f}px ({} anchors)\n"),
                             m_calibration->seed_residual_px, m_calibration->refine_residual_px,

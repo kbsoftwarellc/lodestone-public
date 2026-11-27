@@ -198,8 +198,11 @@ class Pak:
         UE packs a flags word then only the fields that don't fit the common case.
         Block offsets decoded here are ABSOLUTE (unlike the inline header's).
         """
-        r = Reader(self.encoded_entries[at:at + 4096])
-        v = r.u32()
+        v = struct.unpack_from("<I", self.encoded_entries, at)[0]
+        # Window = flags + three u64 + block-size u32 + one u32 per block. A fixed 4 KiB
+        # window ran out on many-block entries (PL_MainWorld5.uexp, ~1,000+ blocks).
+        r = Reader(self.encoded_entries[at:at + 32 + 4 * ((v >> 6) & 0xFFFF)])
+        r.u32()
         e = PakEntry()
         e.cmi = (v >> 23) & 0x3F
         off32 = bool(v & (1 << 31))
